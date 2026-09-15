@@ -160,6 +160,17 @@ a { color: var(--accent); }
   font-weight: 600;
   color: var(--ink-2);
 }
+.account {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s-2);
+  margin: var(--s-2) 0;
+  font-size: var(--t-sm);
+  color: var(--ink-2);
+}
+.account .who { font-weight: 600; color: var(--ink-1); overflow-wrap: anywhere; }
+.account .sync-bad { color: var(--bad-ink, var(--ink-1)); }
 .meta {
   display: flex;
   flex-wrap: wrap;

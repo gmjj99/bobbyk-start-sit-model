@@ -16,6 +16,7 @@
       <h1 class="brand">Start/Sit</h1>
       <p id="week" class="week num">Loading&hellip;</p>
     </div>
+    <div id="account" class="account" aria-live="polite"></div>
     <p id="meta" class="meta"></p>
     <p id="accuracy" class="accuracy"></p>
   </div>
@@ -41,11 +42,12 @@
 
 <footer class="site-footer">
   <div class="wrap">
-    <p>Projections are an estimate, not a guarantee. Your leagues are stored in this browser only; the page reads Sleeper's public API when you ask it to and contacts nothing else. ESPN is never contacted: automated access breaches ESPN's terms.</p>
+    <p>Projections are an estimate, not a guarantee. Your leagues are kept in this browser, and in your account if you sign in, where only you can read them. The page reads Sleeper's public API, and its own account database when you are signed in, and contacts nothing else. ESPN is never contacted: automated access breaches ESPN's terms.</p>
     <h2 class="footer-head">Sources</h2>
     <ul id="attribution" class="attribution"></ul>
   </div>
 </footer>
+<script src="supabase.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

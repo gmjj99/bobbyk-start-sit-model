@@ -939,6 +939,52 @@ function summariseWeek(leagues, index, now) {
 
 const STORE_KEY = 'startsit.leagues.v1';
 const META_KEY = 'startsit.meta.v1';
+const DELETED_KEY = 'startsit.deleted.v1';
+
+// The site's account database. Both values are public by design: row-level security in
+// supabase/schema.sql is what limits each signed-in person to their own leagues, and visitors who
+// are not signed in are granted nothing at all.
+const SUPABASE_URL = 'https://tdjqptanxbowfpehlfzp.supabase.co';
+const SUPABASE_KEY = 'sb_publishable_abg7ubP76TLneu0aFEZpSg_GRb2scMg';
+const SYNC_TABLE = 'user_leagues';
+
+function leagueTime(league) {
+  const t = Date.parse((league && league.updated_at) || '');
+  return Number.isFinite(t) ? t : 0;
+}
+
+/* Two copies of someone's leagues - this browser's and the account's - made into one.
+ *
+ * Per league, the copy edited most recently wins; a tie goes to the account, which every device
+ * shares. A league deleted after its last edit stays deleted, which is why deletions are carried as
+ * {id: when}: without them, the next device to sync would put back a league removed on another.
+ * Re-adding the same league later is newer than its deletion, so it comes back as it should. */
+function mergeLeagueSets(local, remote) {
+  const deleted = Object.assign({}, (remote && remote.deleted) || {});
+  for (const [id, when] of Object.entries((local && local.deleted) || {})) {
+    if (!deleted[id] || Date.parse(when) > Date.parse(deleted[id])) deleted[id] = when;
+  }
+  const order = [];
+  const chosen = {};
+  const consider = (league, preferOnTie) => {
+    if (!league || !league.id) return;
+    if (!chosen[league.id]) { order.push(league.id); chosen[league.id] = league; return; }
+    const a = leagueTime(league), b = leagueTime(chosen[league.id]);
+    if (a > b || (a === b && preferOnTie)) chosen[league.id] = league;
+  };
+  for (const league of (remote && remote.leagues) || []) consider(league, true);
+  for (const league of (local && local.leagues) || []) consider(league, false);
+  const leagues = order.map((id) => chosen[id]).filter((league) => {
+    const gone = Date.parse(deleted[league.id] || '');
+    return !(Number.isFinite(gone) && gone >= leagueTime(league));
+  });
+  return { leagues: leagues, deleted: deleted };
+}
+
+function sameLeagueSets(a, b) {
+  return JSON.stringify(a.leagues) === JSON.stringify(b.leagues)
+    && JSON.stringify(a.deleted) === JSON.stringify(b.deleted);
+}
 const memoryStore = {};
 
 const store = {
@@ -983,6 +1029,136 @@ function loadLeagues() {
 function saveLeagues() {
   state.storageOk = store.set(STORE_KEY, JSON.stringify({ version: 1, leagues: state.leagues }));
   saveMeta({ changed_at: new Date().toISOString() });
+  schedulePush();
+}
+
+function loadDeleted() {
+  try { return JSON.parse(store.get(DELETED_KEY) || '{}') || {}; } catch (err) { return {}; }
+}
+
+function saveDeleted(deleted) {
+  store.set(DELETED_KEY, JSON.stringify(deleted || {}));
+}
+
+/* ---- the account ---- */
+
+const cloud = { client: null, user: null, status: 'unavailable', syncedAt: null, error: null, timer: null, pulling: false };
+
+function cloudInit() {
+  if (typeof window === 'undefined' || !window.supabase || !window.supabase.createClient) return;
+  try {
+    cloud.client = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY, {
+      auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true, flowType: 'pkce' },
+    });
+  } catch (err) { cloud.client = null; return; }
+  cloud.status = 'signed-out';
+  cloud.client.auth.onAuthStateChange((event, session) => {
+    const before = cloud.user && cloud.user.id;
+    cloud.user = session ? session.user : null;
+    cloud.status = cloud.user ? 'signed-in' : 'signed-out';
+    renderAccount();
+    // Deferred: the auth library must finish its own event before it is asked for data.
+    if (cloud.user && cloud.user.id !== before) setTimeout(() => cloudPull(true), 0);
+  });
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible' && cloud.user) cloudPull(false);
+  });
+}
+
+async function cloudSignIn() {
+  if (!cloud.client) return;
+  const back = window.location.origin + window.location.pathname;
+  const { error } = await cloud.client.auth.signInWithOAuth({ provider: 'google', options: { redirectTo: back } });
+  if (error) { cloud.error = error.message; renderAccount(); }
+}
+
+async function cloudSignOut() {
+  if (!cloud.client) return;
+  await cloud.client.auth.signOut();
+  cloud.syncedAt = null;
+  flash('ok', 'Signed out. The leagues already on this device stay here; sign in again to sync them.');
+  render();
+}
+
+/* Read the account's copy, merge it with this browser's, keep the result in both. */
+async function cloudPull(firstSignIn) {
+  if (!cloud.client || !cloud.user || cloud.pulling) return;
+  cloud.pulling = true;
+  cloud.status = 'syncing';
+  renderAccount();
+  try {
+    const { data, error } = await cloud.client.from(SYNC_TABLE).select('leagues, deleted').maybeSingle();
+    if (error) throw error;
+    const local = { leagues: state.leagues, deleted: loadDeleted() };
+    const remote = data ? { leagues: data.leagues || [], deleted: data.deleted || {} } : { leagues: [], deleted: {} };
+    const merged = mergeLeagueSets(local, remote);
+    const checked = validateLeaguesFile({ version: 1, leagues: merged.leagues });
+    const added = checked.leagues.length - state.leagues.length;
+    state.leagues = checked.leagues;
+    store.set(STORE_KEY, JSON.stringify({ version: 1, leagues: state.leagues }));
+    saveDeleted(merged.deleted);
+    if (!data || !sameLeagueSets({ leagues: checked.leagues, deleted: merged.deleted }, remote)) {
+      await cloudPush();
+    }
+    cloud.status = 'signed-in';
+    cloud.error = null;
+    cloud.syncedAt = new Date();
+    if (firstSignIn && !data && state.leagues.length) {
+      flash('ok', 'Signed in. Your ' + state.leagues.length + ' league' + (state.leagues.length === 1 ? '' : 's')
+        + ' from this browser are now saved to your account.');
+    } else if (firstSignIn && added > 0) {
+      flash('ok', 'Signed in. ' + added + ' league' + (added === 1 ? '' : 's') + ' loaded from your account.');
+    }
+  } catch (err) {
+    cloud.status = 'error';
+    cloud.error = (err && err.message) || String(err);
+  } finally {
+    cloud.pulling = false;
+  }
+  render();
+}
+
+async function cloudPush() {
+  if (!cloud.client || !cloud.user) return;
+  const { error } = await cloud.client.from(SYNC_TABLE)
+    .upsert({ user_id: cloud.user.id, leagues: state.leagues, deleted: loadDeleted() }, { onConflict: 'user_id' });
+  if (error) throw error;
+  cloud.syncedAt = new Date();
+}
+
+/* Edits reach the account a moment after they are made, batched so a burst of changes is one write. */
+function schedulePush() {
+  if (!cloud.user || cloud.pulling) return;
+  clearTimeout(cloud.timer);
+  cloud.timer = setTimeout(async () => {
+    try {
+      await cloudPush();
+      cloud.status = 'signed-in';
+      cloud.error = null;
+    } catch (err) {
+      cloud.status = 'error';
+      cloud.error = (err && err.message) || String(err);
+    }
+    renderAccount();
+  }, 800);
+}
+
+function renderAccount() {
+  const box = typeof document !== 'undefined' ? document.getElementById('account') : null;
+  if (!box) return;
+  if (!cloud.client) { box.innerHTML = ''; return; }
+  if (!cloud.user) {
+    box.innerHTML = '<button type="button" class="btn btn-small" data-action="sign-in">Sign in with Google</button>'
+      + '<span>to keep your leagues on every device.</span>'
+      + (cloud.error ? ' <span class="sync-bad">Sign-in failed: ' + esc(cloud.error) + '</span>' : '');
+    return;
+  }
+  const email = (cloud.user.email || (cloud.user.user_metadata || {}).email || 'your account');
+  const status = cloud.status === 'syncing' ? 'Syncing&hellip;'
+    : cloud.status === 'error' ? '<span class="sync-bad">Not synced: ' + esc(cloud.error || 'unknown error') + '. Your leagues are still saved here.</span>'
+      : 'Leagues saved to your account';
+  box.innerHTML = '<span class="who">' + esc(email) + '</span><span>' + status + '</span>'
+    + '<button type="button" class="btn btn-small" data-action="sign-out">Sign out</button>';
 }
 
 function loadMeta() {
@@ -1068,6 +1244,8 @@ async function boot() {
     return;
   }
   renderHeader();
+  cloudInit();
+  renderAccount();
   render();
   if (state.leagues.length) requestPersistence().then((granted) => { state.persisted = granted; });
   autoRefreshSleeper();
@@ -1205,9 +1383,10 @@ function viewWeek() {
       + oldPastes.map((l) => esc(l.name) + ' (' + rosterAgeDays(l, state.now) + ' days old)').join(', ')
       + '. ESPN cannot be read automatically, so waiver moves since then are not here.</div>';
   }
-  if (backupDue(loadMeta(), state.leagues.length, state.now)) {
+  if (!cloud.user && backupDue(loadMeta(), state.leagues.length, state.now)) {
     html += '<div class="notice" role="status"><strong>Your leagues are saved in this browser only.</strong> '
       + 'Clearing browsing data, a private window, or another device will not have them. '
+      + (cloud.client ? '<button class="btn btn-small" data-action="sign-in">Sign in with Google to keep them</button> or ' : '')
       + '<button class="btn btn-small" data-action="export">Download a backup file</button></div>';
   }
 
@@ -1530,12 +1709,13 @@ function viewHow() {
     + '<li>Injury news after the file was made. Check inactives about 90 minutes before kickoff.</li>'
     + '<li>A player whose game has started stays where your league has him.</li></ul>'
     + '<h3>Keeping your leagues week to week</h3><ul>'
-    + '<li>Leagues are saved in this browser on this device, and stay until the browser\'s site data is cleared. Nothing needs re-entering each week.</li>'
+    + '<li><strong>Sign in with Google</strong> and your leagues are saved to your account: any device, any browser, and back again after a browser is cleared. Only you can read them. Signing in asks Google for your name and email and nothing else.</li>'
+    + '<li>Without signing in, leagues are saved in this browser on this device, and stay until the browser\'s site data is cleared.</li>'
     + '<li>Sleeper leagues re-read their rosters from Sleeper when you open the page. ESPN rosters have to be pasted again after waiver moves; My week says when a paste is getting old.</li>'
     + '<li><strong>iPhone and iPad:</strong> Safari deletes a site\'s saved data after 7 days without a visit. Add this page to your Home Screen (Share, then Add to Home Screen) and open it from there - that copy is kept.</li>'
     + '<li>A private or incognito window keeps nothing once it closes.</li>'
     + '<li>To move leagues to another device or browser, use Export leagues and Import file on the Leagues tab. The backup file is also the safety net if a browser is ever cleared.</li></ul>'
-    + '<h3>Privacy</h3><p>Your leagues live in this browser only. The page talks to Sleeper\'s public API when you import or refresh, and to nothing else. ESPN is never contacted: automated access breaches ESPN\'s terms.</p>'
+    + '<h3>Privacy</h3><p>If you sign in, your saved leagues and your email are stored in the site\'s database, readable only by you. Otherwise your leagues live in this browser only. The page talks to Sleeper\'s public API when you import or refresh, to the site\'s account database when you are signed in, and to nothing else. ESPN is never contacted: automated access breaches ESPN\'s terms.</p>'
     + '</section>';
 }
 
@@ -1577,8 +1757,9 @@ async function onClick(event) {
   }
   if (action === 'delete-league') {
     const league = findLeague(id);
-    if (!window.confirm('Remove ' + league.name + ' from this browser?')) return;
+    if (!window.confirm('Remove ' + league.name + (cloud.user ? ' from your account and every device?' : ' from this browser?'))) return;
     state.leagues = state.leagues.filter((l) => l.id !== id);
+    saveDeleted(Object.assign(loadDeleted(), { [id]: new Date().toISOString() }));
     saveLeagues();
     state.openLeague = null;
     flash('ok', 'Removed ' + esc(league.name) + '.');
@@ -1607,6 +1788,8 @@ async function onClick(event) {
     return;
   }
   if (action === 'export') { exportLeagues(); return; }
+  if (action === 'sign-in') { cloudSignIn(); return; }
+  if (action === 'sign-out') { cloudSignOut(); return; }
   if (action === 'refresh-sleeper' || action === 'refresh-one') {
     const which = state.leagues.filter((l) => l.platform === 'sleeper' && (action === 'refresh-sleeper' || l.id === id));
     target.disabled = true;
@@ -1804,7 +1987,7 @@ if (typeof module !== 'undefined' && module.exports) {
     SCHEMA, SLEEPER_API, PRESETS, POSITION_BONUS, CLEAR_POINTS, LEAN_PROBABILITY, THIN_PROBABILITY, GRADES,
     DEFAULT_SD, ELIGIBLE, ESPN_SLOT_MAP,
     presetScoring, points, notProjected, splitNotProjected, sdFor, erf, normCdf, pBeats, gradeCall,
-    compareCall, describeCall, compareScoring, staleness, sleeperDue, rosterAgeDays, backupDue,
+    compareCall, describeCall, compareScoring, mergeLeagueSets, sameLeagueSets, SUPABASE_URL, SUPABASE_KEY, staleness, sleeperDue, rosterAgeDays, backupDue,
     STALE_HOURS, SLEEPER_REFRESH_HOURS, ESPN_ROSTER_WARN_DAYS, BACKUP_WARN_DAYS,
     validateProjections, buildIndex, injuryLevel, isStartingSlot, eligibleFor, hungarian,
     buildLineup, lineupChanges, espnSlots, espnCounts, normaliseName, parseEspnPaste, searchPlayers,
