@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<meta name="description" content="Start/sit calls for your fantasy lineup, scored with your league's settings.">
+<title>Start/Sit</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<header class="site-header">
+  <div class="wrap">
+    <div class="brand-row">
+      <h1 class="brand">Start/Sit</h1>
+      <p id="week" class="week num">Loading&hellip;</p>
+    </div>
+    <p id="meta" class="meta"></p>
+    <p id="accuracy" class="accuracy"></p>
+  </div>
+  <nav class="tabs" aria-label="Sections">
+    <div class="wrap tabs-inner">
+      <button type="button" data-view="week" aria-current="page">My week</button>
+      <button type="button" data-view="leagues" aria-current="false">Leagues</button>
+      <button type="button" data-view="compare" aria-current="false">Compare</button>
+      <button type="button" data-view="how" aria-current="false">How this works</button>
+    </div>
+  </nav>
+</header>
+
+<div class="wrap">
+  <div id="sample-banner" class="notice notice-warn sample-banner" role="status" hidden>
+    <strong>Sample data.</strong> This week's projections file is not published yet, so everything below uses invented numbers. Do not set a lineup from it.
+  </div>
+  <main id="main" tabindex="-1">
+    <noscript><div class="notice notice-bad">This page needs JavaScript: every calculation runs in your browser.</div></noscript>
+  </main>
+</div>
+
+<footer class="site-footer">
+  <div class="wrap">
+    <p>Projections are an estimate, not a guarantee. Your leagues are stored in this browser only; the page reads Sleeper's public API when you ask it to and contacts nothing else. ESPN is never contacted: automated access breaches ESPN's terms.</p>
+    <h2 class="footer-head">Sources</h2>
+    <ul id="attribution" class="attribution"></ul>
+  </div>
+</footer>
+<script src="app.js"></script>
+</body>
+</html>
