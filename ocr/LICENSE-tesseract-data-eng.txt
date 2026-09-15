@@ -1,0 +1,8 @@
+eng.traineddata.gz - English language data for Tesseract OCR (4.0.0_best_int)
+
+Packaged by the tesseract.js project as @tesseract.js-data/eng 1.0.0 (npm, MIT License),
+from the tessdata_best models published by the Tesseract OCR project
+(https://github.com/tesseract-ocr/tessdata_best), which are licensed under the Apache License,
+Version 2.0: http://www.apache.org/licenses/LICENSE-2.0
+
+Self-hosted here, rather than loaded from a CDN, because the page loads no third-party files.

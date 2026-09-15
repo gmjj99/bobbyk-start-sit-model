@@ -1,0 +1,4 @@
+# Vendored, generated files stay byte-exact: no line-ending conversion.
+ocr/** -text
+fonts/** -text
+supabase.js -text

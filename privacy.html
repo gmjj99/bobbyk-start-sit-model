@@ -54,11 +54,20 @@
       <li><strong>Never:</strong> sold, shared, used for advertising, or combined with anything else.</li>
     </ul>
 
+    <h2>Importing a roster from screenshots</h2>
+    <p>Screenshots are read on your own device first, and never leave it for that. If that read does
+    not add up, or you say the import is wrong, and you are signed in, the screenshots are sent to
+    Anthropic's Claude AI to be read once. Start/Sit does not store them, and Anthropic does not use
+    them to train its models (Anthropic may keep API requests for a limited period under its own
+    policies). A count of how many screenshots you had read today is kept, to cap the daily
+    total.</p>
+
     <h2>Services involved</h2>
     <ul>
       <li>GitHub Pages hosts the site and, like any web host, may log visits.</li>
       <li>Google provides sign-in.</li>
       <li>Supabase stores signed-in users' saved leagues.</li>
+      <li>Anthropic reads screenshots with AI, only when the in-browser read needs help.</li>
       <li>Sleeper's public API is read when you import or refresh a Sleeper league.</li>
     </ul>
 

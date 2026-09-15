@@ -597,6 +597,19 @@ details[open] > summary { margin-bottom: var(--s-3); }
 .note { color: var(--ink-2); font-style: italic; }
 .warn { color: var(--inj-q); }
 
+/* Screenshot import. */
+.shot-working { display: flex; align-items: center; gap: var(--s-3); margin: var(--s-3) 0 0; color: var(--ink-2); }
+.spinner {
+  width: 18px; height: 18px; flex: none;
+  border-radius: 50%;
+  border: 2px solid var(--surface-3);
+  border-top-color: var(--accent);
+  animation: spin 0.9s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+.pill-slot { color: var(--accent-strong); background: var(--accent-soft); min-width: 3.2em; text-align: center; }
+.shot-list li { justify-content: flex-start; }
+
 /* The one-time theme question after a first sign-in. */
 .theme-prompt { border-color: var(--accent); box-shadow: 0 0 0 4px var(--glow), var(--shadow); }
 .theme-choices { display: flex; flex-wrap: wrap; gap: var(--s-2); margin-top: var(--s-3); }

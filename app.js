@@ -1035,7 +1035,7 @@ const store = {
 
 const state = {
   data: null, index: null, sample: false, leagues: [], view: 'week', openLeague: null,
-  now: Date.now(), flash: null, pendingSleeper: null, storageOk: true, persisted: null, themePrompt: false,
+  now: Date.now(), flash: null, pendingSleeper: null, storageOk: true, persisted: null, themePrompt: false, shot: null,
   compare: { a: null, b: null, scoring: 'half', interception: '-1' },
 };
 
@@ -1071,6 +1071,134 @@ function loadDeleted() {
 
 function saveDeleted(deleted) {
   store.set(DELETED_KEY, JSON.stringify(deleted || {}));
+}
+
+/* ---- screenshot import ----
+ *
+ * Quick read in the browser first. If it fails its own check, the screenshots go to AI vision with
+ * no extra click; the review screen's "Something's wrong" button does the same. AI reads need a
+ * signed-in account, which is what keeps them from being run by anyone on the internet. */
+
+const SHOT_FUNCTION = 'read-roster';
+
+function shotImporter() {
+  return typeof window !== 'undefined' ? window.ShotImport : null;
+}
+
+function readForLeague(text, league, opts) {
+  const shots = shotImporter();
+  const keys = pasteKeys(state.index);
+  let read = shots.improveRead(parseEspnPaste(text, state.index), keys, PASTE_SLOT, text);
+  if (!opts || !opts.fromAi) read = shots.inferSlots(read, league.slots, eligibleFor, isStartingSlot);
+  return read;
+}
+
+async function startShotImport(league, fileList) {
+  const shots = shotImporter();
+  if (!shots) { flash('bad', 'Screenshot import did not load. Refresh the page and try again.'); render(); return; }
+  const files = Array.from(fileList || []).filter((f) => /^image\//.test(f.type)).slice(0, shots.MAX_IMAGES);
+  if (!files.length) { flash('bad', 'Choose one or more screenshots (PNG or JPEG).'); render(); return; }
+  state.shot = { leagueId: league.id, stage: 'reading', progress: 'Loading the reader…', files: files };
+  render();
+  try {
+    const ocr = await shots.recognize(files, (done, total) => {
+      state.shot.progress = done < total ? 'Reading screenshot ' + (done + 1) + ' of ' + total + '…' : 'Checking the read…';
+      renderShotStatus();
+    });
+    const read = readForLeague(ocr.text, league);
+    const issues = shots.selfCheck(read, league.slots, ocr.confidence, isStartingSlot);
+    Object.assign(state.shot, { read: read, issues: issues, source: 'quick' });
+    if (issues.length) { await shotAi(league, 'self-check'); return; }
+    state.shot.stage = 'review';
+  } catch (err) {
+    Object.assign(state.shot, { stage: 'failed', error: (err && err.message) || String(err) });
+  }
+  render();
+}
+
+async function shotAi(league, reason) {
+  const shots = shotImporter();
+  const shot = state.shot;
+  if (!cloud.client || !cloud.user) {
+    Object.assign(shot, { stage: 'review', needsSignIn: true, aiReason: reason });
+    render();
+    return;
+  }
+  Object.assign(shot, { stage: 'ai', progress: reason === 'self-check'
+    ? 'The quick read did not add up, so AI is checking your screenshots…'
+    : 'AI is re-reading your screenshots…' });
+  render();
+  try {
+    const images = shot.images || (shot.images = await Promise.all(shot.files.map(shots.forAi)));
+    const { data, error } = await cloud.client.functions.invoke(SHOT_FUNCTION, {
+      body: { images: images, slots: league.slots },
+    });
+    if (error) {
+      let detail = error.message;
+      try { const body = await error.context.json(); detail = body.error || detail; } catch (e) { /* no body */ }
+      throw new Error(detail);
+    }
+    const read = readForLeague(shots.aiPlayersToText(data.players), league, { fromAi: true });
+    Object.assign(shot, { read: read, issues: shots.selfCheck(read, league.slots, 100, isStartingSlot),
+      source: 'ai', stage: 'review', needsSignIn: false, aiError: null });
+  } catch (err) {
+    Object.assign(shot, { stage: 'review', source: shot.source || 'quick', aiError: (err && err.message) || String(err) });
+  }
+  render();
+}
+
+function renderShotStatus() {
+  const box = typeof document !== 'undefined' ? document.getElementById('shot-status') : null;
+  if (box && state.shot) box.textContent = state.shot.progress || '';
+}
+
+function shotPanelHtml(league) {
+  const shots = shotImporter();
+  const shot = state.shot && state.shot.leagueId === league.id ? state.shot : null;
+  let html = '<section class="panel shot-panel"><h3>Import from screenshots</h3>';
+  if (!shot || shot.stage === 'failed') {
+    html += '<p class="small muted">Screenshot your ESPN lineup, and the bench if it is further down. Up to '
+      + (shots ? shots.MAX_IMAGES : 4) + ' images. They are read on this device first.</p>'
+      + (shot && shot.stage === 'failed' ? '<div class="notice notice-bad">Could not read those screenshots: ' + esc(shot.error) + '</div>' : '')
+      + '<label class="btn btn-primary file-btn">Choose screenshots'
+      + '<input type="file" accept="image/*" multiple data-input="shot-files" data-id="' + esc(league.id) + '"></label>';
+    return html + '</section>';
+  }
+  if (shot.stage === 'reading' || shot.stage === 'ai') {
+    return html + '<p class="shot-working"><span class="spinner" aria-hidden="true"></span><span id="shot-status" role="status">'
+      + esc(shot.progress || 'Reading…') + '</span></p></section>';
+  }
+
+  const read = shot.read || { matched: [], unmatched: [] };
+  html += '<p class="small">' + (shot.source === 'ai' ? 'Read with AI' : 'Quick read') + ': <strong>'
+    + read.matched.length + ' players</strong>. Check them, then save.</p>';
+  if (shot.needsSignIn) {
+    html += '<div class="notice notice-warn">' + (shot.aiReason === 'person'
+      ? 'To have AI re-read your screenshots, sign in first.'
+      : 'The quick read did not add up' + (shot.issues && shot.issues.length ? ' (' + esc(shot.issues.map((i) => i.message).join(' ')) + ')' : '')
+        + '. AI can read the screenshots properly once you are signed in.')
+      + ' Signing in reloads the page, so choose the screenshots again afterwards. '
+      + (cloud.client ? '<button type="button" class="btn btn-small" data-action="sign-in">Sign in with Google</button>' : '') + '</div>';
+  } else if (shot.aiError) {
+    html += '<div class="notice notice-warn">AI could not read the screenshots: ' + esc(shot.aiError)
+      + '. The quick read is below; fix anything wrong with the picker after saving.</div>';
+  } else if (shot.issues && shot.issues.length) {
+    html += '<div class="notice notice-warn">' + esc(shot.issues.map((i) => i.message).join(' ')) + '</div>';
+  }
+  html += '<ul class="roster-list shot-list">' + read.matched.map((m) => '<li><span><span class="pill pill-slot">'
+    + esc(SLOT_LABEL[m.slot] || m.slot || '?') + '</span> ' + esc(m.entry.name) + ' <span class="muted">' + esc(m.entry.pos) + ' ' + esc(m.entry.team) + '</span>'
+    + (m.fuzzy ? ' <span class="psub">read as "' + esc(m.read) + '"</span>' : '') + '</span></li>').join('') + '</ul>';
+  if (read.unmatched.length) {
+    html += '<p class="small muted">Not matched: ' + read.unmatched.map((l) => '<span class="mono">' + esc(l) + '</span>').join('; ') + '</p>';
+  }
+  html += '<div class="theme-choices">'
+    + '<button type="button" class="btn btn-primary" data-action="shot-save" data-id="' + esc(league.id) + '"' + (read.matched.length ? '' : ' disabled') + '>Use this roster</button>'
+    + (shot.source !== 'ai' ? '<button type="button" class="btn" data-action="shot-wrong" data-id="' + esc(league.id) + '">Something\'s wrong with this import</button>' : '')
+    + '<button type="button" class="btn" data-action="shot-cancel">Cancel</button></div>';
+  if (shot.source === 'ai') {
+    html += '<p class="small muted">Still not right? Save it and fix players with the picker below, or paste the roster instead.</p>';
+  }
+  return html + '</section>';
 }
 
 /* ---- theme ---- */
@@ -1693,6 +1821,7 @@ function viewLeague() {
   html += '</section>';
 
   if (league.platform === 'espn') {
+    html += shotPanelHtml(league);
     html += '<section class="panel"><h3>Roster</h3>'
       + '<form data-form="espn-paste" class="stack"><input type="hidden" name="id" value="' + esc(league.id) + '">'
       + '<label for="es-paste">Paste from your ESPN roster page</label>'
@@ -1907,6 +2036,23 @@ async function onClick(event) {
   }
   if (action === 'export') { exportLeagues(); return; }
   if (action === 'sign-in') { cloudSignIn(); return; }
+  if (action === 'shot-wrong') {
+    const league = findLeague(id);
+    if (league && state.shot) shotAi(league, 'person');
+    return;
+  }
+  if (action === 'shot-cancel') { state.shot = null; render(); return; }
+  if (action === 'shot-save') {
+    const league = findLeague(id);
+    if (!league || !state.shot || !state.shot.read) return;
+    const read = state.shot.read;
+    updateLeague(league.id, Object.assign({ unmatched: read.unmatched, updated_at: new Date().toISOString() },
+      rosterFromPaste(read, league.slots)));
+    flash('ok', 'Roster imported from screenshots: ' + read.matched.length + ' players.');
+    state.shot = null;
+    render();
+    return;
+  }
   if (action === 'toggle-theme') {
     applyTheme(currentTheme() === 'dark' ? 'light' : 'dark', true);
     if (state.themePrompt) { state.themePrompt = false; render(); }
@@ -2079,6 +2225,11 @@ function onChange(event) {
   const kind = input.getAttribute && input.getAttribute('data-input');
   if (kind === 'compare-scoring') { state.compare.scoring = input.value; render(); return; }
   if (kind === 'compare-interception') { state.compare.interception = input.value; render(); return; }
+  if (kind === 'shot-files' && input.files && input.files.length) {
+    const league = findLeague(input.getAttribute('data-id'));
+    if (league) startShotImport(league, input.files);
+    return;
+  }
   if (kind === 'import-file' && input.files && input.files[0]) {
     const reader = new FileReader();
     reader.onload = () => {
@@ -2120,7 +2271,7 @@ if (typeof module !== 'undefined' && module.exports) {
     compareCall, describeCall, compareScoring, resolveTheme, needsThemePrompt, meterFill, THEMES, mergeLeagueSets, sameLeagueSets, SUPABASE_URL, SUPABASE_KEY, staleness, sleeperDue, rosterAgeDays, backupDue,
     STALE_HOURS, SLEEPER_REFRESH_HOURS, ESPN_ROSTER_WARN_DAYS, BACKUP_WARN_DAYS,
     validateProjections, buildIndex, injuryLevel, isStartingSlot, eligibleFor, hungarian,
-    buildLineup, lineupChanges, espnSlots, espnCounts, normaliseName, parseEspnPaste, searchPlayers,
+    buildLineup, lineupChanges, espnSlots, espnCounts, normaliseName, parseEspnPaste, pasteKeys, PASTE_SLOT, searchPlayers,
     canonicalTeam, SleeperError, sleeperUser, sleeperLeague, importSleeperUser, sleeperTeams,
     sleeperToSaved, validateLeaguesFile, mergeLeagues, summariseWeek, rosterFromPaste, esc,
     // The screens as HTML strings, so a test can render each one without a browser.
