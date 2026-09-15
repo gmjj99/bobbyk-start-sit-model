@@ -41,6 +41,54 @@ const PRESETS = {
   espn_ppr: { label: 'ESPN PPR', scoring: Object.assign({}, BASE_SCORING, { rec: 1, pass_int: -2 }) },
 };
 
+// Sleeper's and ESPN's defaults differ in one number, the interception, so Compare offers three
+// presets and that one switch rather than six presets that look like six different scorings.
+const COMPARE_BASES = { standard: 'Standard', half: 'Half PPR', ppr: 'Full PPR' };
+const INTERCEPTION_CHOICES = { '-1': 'Interception -1 (Sleeper default)', '-2': 'Interception -2 (ESPN default)' };
+
+function compareScoring(base, interception) {
+  return Object.assign(presetScoring(COMPARE_BASES[base] ? base : 'half'), { pass_int: Number(interception) || -1 });
+}
+
+// A file this old means an update was missed - the machine that makes it was off, or a push
+// failed - and the page should say so rather than present last week's numbers as this week's.
+const STALE_HOURS = 72;
+
+function staleness(generatedAt, now) {
+  const made = Date.parse(generatedAt);
+  if (!Number.isFinite(made)) return null;
+  const hours = (now - made) / 3600000;
+  return hours >= STALE_HOURS ? { hours: hours, days: Math.floor(hours / 24) } : null;
+}
+
+// Rosters change on waivers, so a Sleeper league re-reads itself when the page opens if its copy is
+// older than this. ESPN rosters cannot be read, so an old paste is flagged instead.
+const SLEEPER_REFRESH_HOURS = 6;
+const ESPN_ROSTER_WARN_DAYS = 5;
+const BACKUP_WARN_DAYS = 14;
+
+function sleeperDue(league, now) {
+  if (!league || league.platform !== 'sleeper') return false;
+  const t = Date.parse(league.updated_at || '');
+  return !Number.isFinite(t) || now - t > SLEEPER_REFRESH_HOURS * 3600000;
+}
+
+function rosterAgeDays(league, now) {
+  const t = Date.parse((league && league.updated_at) || '');
+  return Number.isFinite(t) ? Math.floor((now - t) / 86400000) : null;
+}
+
+/* Is it time to nudge for a backup file? Only when there is something unsaved to lose: leagues
+ * exist, they changed after the last export (or there never was one), and that export is old. */
+function backupDue(meta, leagueCount, now) {
+  if (!leagueCount) return false;
+  const exported = Date.parse((meta && meta.exported_at) || '');
+  const changed = Date.parse((meta && meta.changed_at) || '');
+  if (!Number.isFinite(exported)) return true;
+  if (Number.isFinite(changed) && changed <= exported) return false;
+  return now - exported > BACKUP_WARN_DAYS * 86400000;
+}
+
 function presetScoring(name) {
   const preset = PRESETS[name];
   if (!preset) throw new Error('unknown scoring preset "' + name + '"');
@@ -890,6 +938,7 @@ function summariseWeek(leagues, index, now) {
 /* ------------------------------------------------------------------------------------------ */
 
 const STORE_KEY = 'startsit.leagues.v1';
+const META_KEY = 'startsit.meta.v1';
 const memoryStore = {};
 
 const store = {
@@ -907,7 +956,8 @@ const store = {
 
 const state = {
   data: null, index: null, sample: false, leagues: [], view: 'week', openLeague: null,
-  now: Date.now(), flash: null, pendingSleeper: null, storageOk: true, compare: { a: null, b: null, scoring: 'half' },
+  now: Date.now(), flash: null, pendingSleeper: null, storageOk: true, persisted: null,
+  compare: { a: null, b: null, scoring: 'half', interception: '-1' },
 };
 
 function esc(value) {
@@ -932,6 +982,46 @@ function loadLeagues() {
 
 function saveLeagues() {
   state.storageOk = store.set(STORE_KEY, JSON.stringify({ version: 1, leagues: state.leagues }));
+  saveMeta({ changed_at: new Date().toISOString() });
+}
+
+function loadMeta() {
+  try { return JSON.parse(store.get(META_KEY) || '{}') || {}; } catch (err) { return {}; }
+}
+
+function saveMeta(changes) {
+  store.set(META_KEY, JSON.stringify(Object.assign(loadMeta(), changes)));
+}
+
+/* Ask the browser not to clear this site's storage when space runs low. Chrome and Firefox grant
+ * it to a site you use; Safari decides for itself. Either way the backup file is the real safety. */
+async function requestPersistence() {
+  try {
+    if (!navigator.storage || !navigator.storage.persist) return null;
+    if (await navigator.storage.persisted()) return true;
+    return await navigator.storage.persist();
+  } catch (err) { return null; }
+}
+
+/* Re-read Sleeper leagues whose copy is older than SLEEPER_REFRESH_HOURS, quietly, after the page
+ * has drawn. A failure leaves the saved copy in place and says so; it never empties a league. */
+async function autoRefreshSleeper() {
+  const due = state.leagues.filter((l) => sleeperDue(l, Date.now()));
+  if (!due.length) return;
+  const failures = [];
+  for (const league of due) {
+    try {
+      const bundle = await sleeperLeague(league.league_id, league.owner_id, fetchJsonish);
+      const fresh = sleeperToSaved(bundle.league, bundle.rosters, bundle.users, league.owner_id);
+      if (fresh) updateLeague(league.id, fresh); else failures.push(league.name);
+    } catch (err) {
+      failures.push(league.name);
+    }
+  }
+  if (failures.length) {
+    flash('warn', 'Could not refresh from Sleeper: ' + failures.map(esc).join(', ') + '. Showing the rosters saved earlier.');
+  }
+  render();
 }
 
 function nowFromUrl() {
@@ -979,6 +1069,8 @@ async function boot() {
   }
   renderHeader();
   render();
+  if (state.leagues.length) requestPersistence().then((granted) => { state.persisted = granted; });
+  autoRefreshSleeper();
 }
 
 function renderHeader() {
@@ -996,6 +1088,15 @@ function renderHeader() {
       + pct(acc.flex) + '</strong> of flex pairs, ' + esc(acc.seasons) + '. <span class="muted">(' + esc(acc.note) + '.)</span>'
     : '';
   $('#sample-banner').hidden = !state.sample;
+  const stale = state.sample ? null : staleness(d.generated_at, state.now);
+  const staleBanner = $('#stale-banner');
+  if (staleBanner) {
+    staleBanner.hidden = !stale;
+    staleBanner.innerHTML = stale
+      ? '<strong>These projections are ' + (stale.days >= 1 ? stale.days + ' day' + (stale.days === 1 ? '' : 's') : Math.round(stale.hours) + ' hours')
+        + ' old.</strong> An update was probably missed, so injuries and lines since then are not in them. Check news before you lock anything in.'
+      : '';
+  }
   $('#attribution').innerHTML = (d.attribution || []).map((a) => '<li>' + esc(a) + '</li>').join('');
 }
 
@@ -1096,6 +1197,19 @@ function viewWeek() {
     html += '<button class="btn" data-action="refresh-sleeper">Refresh Sleeper leagues</button>';
   }
   html += '</div>';
+
+  const oldPastes = state.leagues.filter((l) => l.platform === 'espn' && (l.roster || []).length
+    && rosterAgeDays(l, state.now) !== null && rosterAgeDays(l, state.now) >= ESPN_ROSTER_WARN_DAYS);
+  if (oldPastes.length) {
+    html += '<div class="notice notice-warn" role="status"><strong>ESPN rosters to re-paste:</strong> '
+      + oldPastes.map((l) => esc(l.name) + ' (' + rosterAgeDays(l, state.now) + ' days old)').join(', ')
+      + '. ESPN cannot be read automatically, so waiver moves since then are not here.</div>';
+  }
+  if (backupDue(loadMeta(), state.leagues.length, state.now)) {
+    html += '<div class="notice" role="status"><strong>Your leagues are saved in this browser only.</strong> '
+      + 'Clearing browsing data, a private window, or another device will not have them. '
+      + '<button class="btn btn-small" data-action="export">Download a backup file</button></div>';
+  }
 
   if (week.injured.length || week.shared.length) {
     html += '<section class="panel summary">';
@@ -1342,13 +1456,24 @@ function viewCompare() {
       + '<ul id="cmp-results-' + side + '" class="picker-results" aria-live="polite"></ul></div>';
   }
   html += '</div><label for="cmp-scoring">Scoring</label><select id="cmp-scoring" data-input="compare-scoring">';
-  for (const k of Object.keys(PRESETS)) {
-    html += '<option value="' + k + '"' + (c.scoring === k ? ' selected' : '') + '>' + esc(PRESETS[k].label) + '</option>';
+  for (const k of Object.keys(COMPARE_BASES)) {
+    html += '<option value="' + k + '"' + (c.scoring === k ? ' selected' : '') + '>' + esc(COMPARE_BASES[k]) + '</option>';
   }
-  for (const league of state.leagues) {
-    html += '<option value="league:' + esc(league.id) + '"' + (c.scoring === 'league:' + league.id ? ' selected' : '') + '>' + esc(league.name) + '</option>';
+  if (state.leagues.length) {
+    html += '<optgroup label="Your leagues">';
+    for (const league of state.leagues) {
+      html += '<option value="league:' + esc(league.id) + '"' + (c.scoring === 'league:' + league.id ? ' selected' : '') + '>' + esc(league.name) + '</option>';
+    }
+    html += '</optgroup>';
   }
   html += '</select>';
+  if (c.scoring.indexOf('league:') !== 0) {
+    html += '<label for="cmp-int">Interceptions</label><select id="cmp-int" data-input="compare-interception">';
+    for (const k of Object.keys(INTERCEPTION_CHOICES)) {
+      html += '<option value="' + k + '"' + (String(c.interception) === k ? ' selected' : '') + '>' + esc(INTERCEPTION_CHOICES[k]) + '</option>';
+    }
+    html += '</select><p class="small muted">Sleeper and ESPN default scoring are identical except for this: Sleeper takes 1 point for an interception, ESPN takes 2.</p>';
+  }
 
   const a = c.a && state.index.byId[c.a];
   const b = c.b && state.index.byId[c.b];
@@ -1358,7 +1483,7 @@ function viewCompare() {
       const league = findLeague(c.scoring.slice(7));
       scoring = league ? league.scoring : presetScoring('half');
     } else {
-      scoring = presetScoring(c.scoring);
+      scoring = compareScoring(c.scoring, c.interception);
     }
     const pa = { name: a.name, team: a.team, pos: a.pos, mu: points(a, scoring), sd: sdFor(a, scoring) };
     const pb = { name: b.name, team: b.team, pos: b.pos, mu: points(b, scoring), sd: sdFor(b, scoring) };
@@ -1404,6 +1529,12 @@ function viewHow() {
     + '<li>Teammates are treated as independent. They are not, and a same-team comparison says so.</li>'
     + '<li>Injury news after the file was made. Check inactives about 90 minutes before kickoff.</li>'
     + '<li>A player whose game has started stays where your league has him.</li></ul>'
+    + '<h3>Keeping your leagues week to week</h3><ul>'
+    + '<li>Leagues are saved in this browser on this device, and stay until the browser\'s site data is cleared. Nothing needs re-entering each week.</li>'
+    + '<li>Sleeper leagues re-read their rosters from Sleeper when you open the page. ESPN rosters have to be pasted again after waiver moves; My week says when a paste is getting old.</li>'
+    + '<li><strong>iPhone and iPad:</strong> Safari deletes a site\'s saved data after 7 days without a visit. Add this page to your Home Screen (Share, then Add to Home Screen) and open it from there - that copy is kept.</li>'
+    + '<li>A private or incognito window keeps nothing once it closes.</li>'
+    + '<li>To move leagues to another device or browser, use Export leagues and Import file on the Leagues tab. The backup file is also the safety net if a browser is ever cleared.</li></ul>'
     + '<h3>Privacy</h3><p>Your leagues live in this browser only. The page talks to Sleeper\'s public API when you import or refresh, and to nothing else. ESPN is never contacted: automated access breaches ESPN\'s terms.</p>'
     + '</section>';
 }
@@ -1634,6 +1765,7 @@ function onChange(event) {
   const input = event.target;
   const kind = input.getAttribute && input.getAttribute('data-input');
   if (kind === 'compare-scoring') { state.compare.scoring = input.value; render(); return; }
+  if (kind === 'compare-interception') { state.compare.interception = input.value; render(); return; }
   if (kind === 'import-file' && input.files && input.files[0]) {
     const reader = new FileReader();
     reader.onload = () => {
@@ -1662,6 +1794,7 @@ function exportLeagues() {
   document.body.appendChild(link);
   link.click();
   setTimeout(() => { URL.revokeObjectURL(link.href); link.remove(); }, 1000);
+  saveMeta({ exported_at: new Date().toISOString() });
 }
 
 /* ------------------------------------------------------------------------------------------ */
@@ -1671,7 +1804,9 @@ if (typeof module !== 'undefined' && module.exports) {
     SCHEMA, SLEEPER_API, PRESETS, POSITION_BONUS, CLEAR_POINTS, LEAN_PROBABILITY, THIN_PROBABILITY, GRADES,
     DEFAULT_SD, ELIGIBLE, ESPN_SLOT_MAP,
     presetScoring, points, notProjected, splitNotProjected, sdFor, erf, normCdf, pBeats, gradeCall,
-    compareCall, describeCall, validateProjections, buildIndex, injuryLevel, isStartingSlot, eligibleFor, hungarian,
+    compareCall, describeCall, compareScoring, staleness, sleeperDue, rosterAgeDays, backupDue,
+    STALE_HOURS, SLEEPER_REFRESH_HOURS, ESPN_ROSTER_WARN_DAYS, BACKUP_WARN_DAYS,
+    validateProjections, buildIndex, injuryLevel, isStartingSlot, eligibleFor, hungarian,
     buildLineup, lineupChanges, espnSlots, espnCounts, normaliseName, parseEspnPaste, searchPlayers,
     canonicalTeam, SleeperError, sleeperUser, sleeperLeague, importSleeperUser, sleeperTeams,
     sleeperToSaved, validateLeaguesFile, mergeLeagues, summariseWeek, rosterFromPaste, esc,
