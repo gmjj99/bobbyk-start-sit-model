@@ -1085,12 +1085,31 @@ function shotImporter() {
   return typeof window !== 'undefined' ? window.ShotImport : null;
 }
 
-function readForLeague(text, league, opts) {
+/* What the screenshot matchers need from the page: name and team normalising, and a player's
+ * projected half-PPR points for the rare tie a projection can break. */
+function shotHelpers() {
+  const half = presetScoring('half');
+  return {
+    normaliseName: normaliseName,
+    canonicalTeam: canonicalTeam,
+    isTeam: (t) => canonicalTeam(t) in TEAM_NICKNAMES,
+    teamFromName: (name) => {
+      const word = normaliseName(String(name || '').replace(/d\/?st/i, ''));
+      return Object.keys(TEAM_NICKNAMES).find((k) => TEAM_NICKNAMES[k] === word) || '';
+    },
+    projectedPoints: (entry) => points(entry, half),
+  };
+}
+
+/* A quick read: full names (the website's paste, desktop screenshots) and abbreviated names (the
+ * ESPN app's "J. Herbert"), together, in reading order; then slots from that order. */
+function readForLeague(text, league) {
   const shots = shotImporter();
-  const keys = pasteKeys(state.index);
-  let read = shots.improveRead(parseEspnPaste(text, state.index), keys, PASTE_SLOT, text);
-  if (!opts || !opts.fromAi) read = shots.inferSlots(read, league.slots, eligibleFor, isStartingSlot);
-  return read;
+  const helpers = shotHelpers();
+  const full = shots.improveRead(parseEspnPaste(text, state.index), pasteKeys(state.index), PASTE_SLOT, text);
+  const abbreviated = shots.readAbbreviatedRows(text, state.index, helpers, PASTE_SLOT);
+  const read = shots.combineReads(full, abbreviated, text);
+  return shots.inferSlots(read, league.slots, eligibleFor, isStartingSlot);
 }
 
 async function startShotImport(league, fileList) {
@@ -1138,7 +1157,7 @@ async function shotAi(league, reason) {
       try { const body = await error.context.json(); detail = body.error || detail; } catch (e) { /* no body */ }
       throw new Error(detail);
     }
-    const read = readForLeague(shots.aiPlayersToText(data.players), league, { fromAi: true });
+    const read = shots.readAiPlayers(data.players, state.index, shotHelpers());
     Object.assign(shot, { read: read, issues: shots.selfCheck(read, league.slots, 100, isStartingSlot),
       source: 'ai', stage: 'review', needsSignIn: false, aiError: null });
   } catch (err) {
@@ -1299,7 +1318,7 @@ async function cloudSignIn() {
 
 async function cloudDeleteData() {
   if (!cloud.client || !cloud.user) return;
-  if (!window.confirm('Delete every league saved to your account? They stay in this browser until you clear it.')) return;
+  if (!window.confirm('Delete every league from your account and from this device? This cannot be undone.')) return;
   clearTimeout(cloud.timer);
   const { error } = await cloud.client.from(SYNC_TABLE).delete().eq('user_id', cloud.user.id);
   if (error) {
@@ -1307,18 +1326,40 @@ async function cloudDeleteData() {
     render();
     return;
   }
-  saveDeleted({});
-  await cloud.client.auth.signOut();
-  flash('ok', 'Your saved data is deleted from the account and you are signed out.');
+  clearDeviceLeagues();
+  flash('ok', 'Deleted. Your account and this device have no saved leagues. You are still signed in.');
   render();
 }
 
+/* Signing out takes the leagues off this device - the account keeps them, and signing in brings them
+ * back. A website that leaves your leagues on a borrowed phone after "Sign out" has not signed you
+ * out of anything. Unsaved edits are pushed first; if that fails nothing is removed, and it says so. */
 async function cloudSignOut() {
   if (!cloud.client) return;
+  clearTimeout(cloud.timer);
+  if (cloud.user && state.leagues.length) {
+    try {
+      await cloudPush();
+    } catch (err) {
+      flash('bad', 'Not signed out: your latest changes could not be saved to your account ('
+        + esc((err && err.message) || String(err)) + '). Check your connection and try again.');
+      render();
+      return;
+    }
+  }
   await cloud.client.auth.signOut();
+  clearDeviceLeagues();
   cloud.syncedAt = null;
-  flash('ok', 'Signed out. The leagues already on this device stay here; sign in again to sync them.');
+  flash('ok', 'Signed out. Your leagues are saved in your account and come back when you sign in.');
   render();
+}
+
+function clearDeviceLeagues() {
+  state.leagues = [];
+  state.openLeague = null;
+  state.shot = null;
+  store.set(STORE_KEY, JSON.stringify({ version: 1, leagues: [] }));
+  saveDeleted({});
 }
 
 /* Read the account's copy, merge it with this browser's, keep the result in both. */

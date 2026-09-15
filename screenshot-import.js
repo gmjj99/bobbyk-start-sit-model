@@ -108,6 +108,140 @@
     return { matched: matched, unmatched: unmatched };
   }
 
+  /* ---------------------------------------------------------------- ESPN's abbreviated names
+   *
+   * The ESPN app prints "J. Herbert", not "Justin Herbert", so a full-name matcher finds nobody and
+   * only the defences - named by team - come through. Found by Michael's first real import on 15
+   * September 2026. A row carries more than the name, though: a position, the player's team (text
+   * or logo), the opponent ("vs LV", "@KC") and a projection. Initial + last name + position is
+   * unique for all but a handful of players a week (4 of 450 in week 2); the team, or the opponent -
+   * only one team plays the Raiders - settles those. The projection breaks a tie only when it is
+   * clearly closer to one candidate. The headshot is never needed. */
+
+  const SUFFIX = /\s+(Jr\.?|Sr\.?|II|III|IV|V)$/i;
+  const POSITIONS = { QB: 'QB', RB: 'RB', WR: 'WR', TE: 'TE', K: 'K', 'D/ST': 'DEF', DST: 'DEF', DEF: 'DEF' };
+
+  function nameParts(fullName, normalise) {
+    const tokens = String(fullName || '').replace(SUFFIX, '').trim().split(/\s+/);
+    return {
+      initial: (tokens[0] || '').replace(/[^A-Za-z]/g, '').charAt(0).toLowerCase(),
+      last: normalise(tokens.slice(1).join(' ')),
+    };
+  }
+
+  /* The one player a row describes, or {entry: null, candidates} when the clues cannot decide.
+   * clue: {initial, last, position, team, opponent, projection}. A clue that would rule out every
+   * candidate is taken as misread and ignored, never as proof that nobody matches. */
+  function identify(clue, index, helpers) {
+    const normalise = helpers.normaliseName;
+    const team = (t) => helpers.canonicalTeam(String(t || '').replace(/[^A-Za-z]/g, ''));
+    const last = normalise(String(clue.last || '').replace(SUFFIX, ''));
+    if (!last) return { entry: null, candidates: [] };
+    const players = index.all.filter((e) => e.pos !== 'DEF');
+    let pool = players.filter((e) => nameParts(e.name, normalise).last === last);
+    if (!pool.length && last.length >= 6) {
+      pool = players.filter((e) => levenshtein(nameParts(e.name, normalise).last, last) <= 1);
+    }
+    const narrow = (test) => { const kept = pool.filter(test); if (kept.length) pool = kept; };
+    if (clue.initial) narrow((e) => nameParts(e.name, normalise).initial === String(clue.initial).charAt(0).toLowerCase());
+    if (clue.position && POSITIONS[String(clue.position).toUpperCase()]) {
+      narrow((e) => e.pos === POSITIONS[String(clue.position).toUpperCase()]);
+    }
+    if (pool.length > 1 && clue.team) narrow((e) => team(e.team) === team(clue.team));
+    if (pool.length > 1 && clue.opponent) narrow((e) => team(e.opp) === team(clue.opponent));
+    const projection = Number(clue.projection);
+    if (pool.length > 1 && Number.isFinite(projection) && helpers.projectedPoints) {
+      const ranked = pool.map((e) => ({ e: e, d: Math.abs(helpers.projectedPoints(e) - projection) }))
+        .sort((a, b) => a.d - b.d);
+      if (ranked[1].d - ranked[0].d >= 3) pool = [ranked[0].e];
+    }
+    return pool.length === 1 ? { entry: pool[0], candidates: pool } : { entry: null, candidates: pool };
+  }
+
+  const ABBREVIATED = /(?:^|[^A-Za-z])([A-Z])\.\s?((?:St\.\s?|Van\s|Mc|O['’])?[A-Z][A-Za-z'’\-]+(?:\s(?:Jr\.?|Sr\.?|II|III|IV|V))?)/;
+  const OPPONENT = /(?:vs\.?|@)\s?([A-Z]{2,3})\b/;
+  const POSITION_TOKEN = /(?:^|[\s,·•|-])(QB|RB|WR|TE|K|D\/ST)(?=$|[\s,·•|-])/;
+  const PROJECTION = /(?:^|\s)(\d{1,2}\.\d)(?=\s|$)/;
+
+  /* Rows of an OCR'd ESPN app roster, read by their abbreviated names. A row is a name line plus the
+   * line after it, which is where the app puts team, position and opponent. */
+  function readAbbreviatedRows(text, index, helpers, slotLabels) {
+    const lines = String(text || '').split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+    const matched = [];
+    const unresolved = [];
+    const seen = new Set();
+    let pendingSlot = null;
+    lines.forEach((line, i) => {
+      const labelOnly = slotLabels[line.toUpperCase().replace(/\s+/g, '')];
+      if (labelOnly) { pendingSlot = labelOnly; return; }
+      const name = line.match(ABBREVIATED);
+      if (!name) return;
+      const context = line + ' ' + (lines[i + 1] || '');
+      const teams = (context.replace(OPPONENT, ' ').match(/\b[A-Z]{2,3}\b/g) || [])
+        .filter((t) => helpers.isTeam(t) && !POSITIONS[t]);
+      const opponent = context.match(OPPONENT);
+      const clue = {
+        initial: name[1], last: name[2], position: (context.match(POSITION_TOKEN) || [])[1],
+        team: teams[0], opponent: opponent && opponent[1], projection: (line.match(PROJECTION) || [])[1],
+      };
+      const found = identify(clue, index, helpers);
+      const first = line.split(/\s+/)[0].toUpperCase();
+      const slot = (slotLabels[first] && line.indexOf(name[0].trim()) > 0 ? slotLabels[first] : null) || pendingSlot;
+      pendingSlot = null;
+      if (found.entry && !seen.has(found.entry.id)) {
+        seen.add(found.entry.id);
+        matched.push({ id: found.entry.id, entry: found.entry, line: line, slot: slot, clue: clue });
+      } else if (!found.entry) {
+        unresolved.push(name[1] + '. ' + name[2] + (clue.position ? ' ' + clue.position : '')
+          + (found.candidates.length > 1 ? ' (could be ' + found.candidates.map((e) => e.name + ' ' + e.team).join(' or ') + ')' : ''));
+      }
+    });
+    return { matched: matched, unmatched: unresolved };
+  }
+
+  /* Everything a screenshot read found, by full name and by abbreviated name, in reading order. */
+  function combineReads(fullNames, abbreviated, text) {
+    const matched = fullNames.matched.slice();
+    const have = new Set(matched.map((m) => m.id));
+    for (const m of abbreviated.matched) if (!have.has(m.id)) { have.add(m.id); matched.push(m); }
+    const at = (m) => { const i = String(text).indexOf(m.line); return i === -1 ? Infinity : i; };
+    matched.sort((a, b) => at(a) - at(b));
+    return { matched: matched, unmatched: fullNames.unmatched.concat(abbreviated.unmatched) };
+  }
+
+  const AI_SLOTS = { QB: 'QB', RB: 'RB', WR: 'WR', TE: 'TE', FLEX: 'FLEX', 'RB/WR': 'WRRB_FLEX', 'WR/TE': 'REC_FLEX',
+    OP: 'SUPER_FLEX', 'D/ST': 'DEF', K: 'K', BENCH: 'BN', IR: 'IR' };
+
+  /* An AI answer, identified with the same clues. Defences go by team. */
+  function readAiPlayers(players, index, helpers) {
+    const matched = [];
+    const unmatched = [];
+    const seen = new Set();
+    for (const p of players || []) {
+      const slot = AI_SLOTS[String(p.slot || '').toUpperCase()] || null;
+      let entry = null;
+      let candidates = [];
+      if (String(p.position || '').toUpperCase() === 'D/ST') {
+        const shown = helpers.canonicalTeam(p.team) || helpers.teamFromName(p.name_as_shown || p.last_name);
+        entry = index.all.find((e) => e.pos === 'DEF' && e.team === helpers.canonicalTeam(shown)) || null;
+      } else {
+        const found = identify({ initial: p.first_initial, last: p.last_name, position: p.position, team: p.team,
+          opponent: p.opponent, projection: p.projected_points }, index, helpers);
+        entry = found.entry;
+        candidates = found.candidates;
+      }
+      const label = p.name_as_shown || [p.first_initial, p.last_name].filter(Boolean).join('. ');
+      if (entry && !seen.has(entry.id)) {
+        seen.add(entry.id);
+        matched.push({ id: entry.id, entry: entry, line: label, slot: slot });
+      } else if (!entry) {
+        unmatched.push(label + (p.position ? ' ' + p.position : '')
+          + (candidates.length > 1 ? ' (could be ' + candidates.map((e) => e.name + ' ' + e.team).join(' or ') + ')' : ''));
+      }
+    }
+    return { matched: matched, unmatched: unmatched };
+  }
+
   /* Slots from reading order, where the slot column was misread.
    *
    * ESPN lists the starting lineup in the league's slot order, then the bench. Slot labels are the
@@ -283,6 +417,7 @@
   const api = {
     OCR_BASE, MAX_IMAGES, AI_MAX_EDGE, LOW_CONFIDENCE, EMPTY_BENCH_ALLOWANCE,
     levenshtein, allowedSlips, fuzzyMatch, improveRead, inferSlots, selfCheck, aiPlayersToText, scaleFor,
+    nameParts, identify, readAbbreviatedRows, combineReads, readAiPlayers,
     recognize, forAi,
   };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
