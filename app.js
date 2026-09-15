@@ -948,6 +948,39 @@ const SUPABASE_URL = 'https://tdjqptanxbowfpehlfzp.supabase.co';
 const SUPABASE_KEY = 'sb_publishable_abg7ubP76TLneu0aFEZpSg_GRb2scMg';
 const SYNC_TABLE = 'user_leagues';
 
+/* Theme. Light unless chosen otherwise. The device keeps a copy (theme.js reads it before the page
+ * draws); a signed-in account keeps the authoritative one in its profile settings, so every device
+ * that signs in gets the same look. */
+const THEME_KEY = 'startsit.theme';
+const THEMES = ['light', 'dark'];
+
+function resolveTheme(deviceTheme, accountTheme) {
+  if (THEMES.indexOf(accountTheme) !== -1) return accountTheme;
+  if (THEMES.indexOf(deviceTheme) !== -1) return deviceTheme;
+  return 'light';
+}
+
+/* Ask once per account: only when someone is signed in and their account has never chosen. */
+function needsThemePrompt(user) {
+  if (!user) return false;
+  const chosen = (user.user_metadata || {}).theme;
+  return THEMES.indexOf(chosen) === -1;
+}
+
+/* A call's certainty as a bar: empty at a coin flip, full at certain. */
+function meterFill(p) {
+  const n = Number(p);
+  if (!Number.isFinite(n)) return null;
+  return Math.max(0, Math.min(100, Math.round((Math.max(n, 1 - n) - 0.5) * 200)));
+}
+
+function meterHtml(p) {
+  const fill = meterFill(p);
+  if (fill === null) return '';
+  return '<span class="meter" role="img" aria-label="' + Math.round(Math.max(p, 1 - p) * 100) + '% confidence">'
+    + '<span style="--fill:' + fill + '%"></span></span>';
+}
+
 function leagueTime(league) {
   const t = Date.parse((league && league.updated_at) || '');
   return Number.isFinite(t) ? t : 0;
@@ -1002,7 +1035,7 @@ const store = {
 
 const state = {
   data: null, index: null, sample: false, leagues: [], view: 'week', openLeague: null,
-  now: Date.now(), flash: null, pendingSleeper: null, storageOk: true, persisted: null,
+  now: Date.now(), flash: null, pendingSleeper: null, storageOk: true, persisted: null, themePrompt: false,
   compare: { a: null, b: null, scoring: 'half', interception: '-1' },
 };
 
@@ -1040,6 +1073,50 @@ function saveDeleted(deleted) {
   store.set(DELETED_KEY, JSON.stringify(deleted || {}));
 }
 
+/* ---- theme ---- */
+
+function deviceTheme() {
+  try { return window.localStorage.getItem(THEME_KEY); } catch (err) { return null; }
+}
+
+/* Put a theme on the page and remember it on this device; with `toAccount`, on the account too.
+ * An account write that fails leaves the device copy in place, and the next change retries. */
+function applyTheme(theme, toAccount) {
+  const chosen = THEMES.indexOf(theme) !== -1 ? theme : 'light';
+  if (typeof document !== 'undefined') {
+    document.documentElement.setAttribute('data-theme', chosen);
+    document.documentElement.style.colorScheme = chosen;
+    const meta = document.querySelector('meta[name="theme-color"]');
+    if (meta) meta.setAttribute('content', chosen === 'dark' ? '#0A111D' : '#F6F8FA');
+    const toggle = document.getElementById('theme-toggle');
+    if (toggle) {
+      toggle.setAttribute('aria-pressed', chosen === 'dark' ? 'true' : 'false');
+      toggle.setAttribute('aria-label', chosen === 'dark' ? 'Switch to light theme' : 'Switch to dark theme');
+    }
+  }
+  try { window.localStorage.setItem(THEME_KEY, chosen); } catch (err) { /* device copy unavailable */ }
+  if (toAccount && cloud.client && cloud.user) {
+    cloud.client.auth.updateUser({ data: { theme: chosen } }).then(({ data, error }) => {
+      if (!error && data && data.user) cloud.user = data.user;
+    });
+  }
+  return chosen;
+}
+
+function currentTheme() {
+  return typeof document !== 'undefined' && document.documentElement.getAttribute('data-theme') === 'dark' ? 'dark' : 'light';
+}
+
+function themePromptHtml() {
+  const now = currentTheme();
+  return '<section class="panel theme-prompt" aria-labelledby="theme-q"><h2 id="theme-q">Choose your look</h2>'
+    + '<p>Saved to your account, so every device you sign in on matches. Change it any time with the button at the top.</p>'
+    + '<div class="theme-choices">'
+    + '<button type="button" class="btn' + (now === 'light' ? ' btn-primary' : '') + '" data-action="choose-theme" data-theme-choice="light">Light</button>'
+    + '<button type="button" class="btn' + (now === 'dark' ? ' btn-primary' : '') + '" data-action="choose-theme" data-theme-choice="dark">Dark</button>'
+    + '</div></section>';
+}
+
 /* ---- the account ---- */
 
 const cloud = { client: null, user: null, status: 'unavailable', syncedAt: null, error: null, timer: null, pulling: false };
@@ -1069,6 +1146,13 @@ async function cloudInit() {
     const before = cloud.user && cloud.user.id;
     cloud.user = session ? session.user : null;
     cloud.status = cloud.user ? 'signed-in' : 'signed-out';
+    if (cloud.user) {
+      const accountTheme = (cloud.user.user_metadata || {}).theme;
+      if (THEMES.indexOf(accountTheme) !== -1) applyTheme(accountTheme, false);
+      state.themePrompt = needsThemePrompt(cloud.user);
+    } else {
+      state.themePrompt = false;
+    }
     renderAccount();
     // Deferred: the auth library must finish its own event before it is asked for data.
     if (cloud.user && cloud.user.id !== before) setTimeout(() => cloudPull(true), 0);
@@ -1185,7 +1269,7 @@ function renderAccount() {
   const email = (cloud.user.email || (cloud.user.user_metadata || {}).email || 'your account');
   const status = cloud.status === 'syncing' ? 'Syncing&hellip;'
     : cloud.status === 'error' ? '<span class="sync-bad">Not synced: ' + esc(cloud.error || 'unknown error') + '. Your leagues are still saved here.</span>'
-      : 'Leagues saved to your account';
+      : '<span class="synced">Leagues saved to your account</span>';
   box.innerHTML = '<span class="who">' + esc(email) + '</span><span>' + status + '</span>'
     + '<button type="button" class="btn btn-small" data-action="sign-out">Sign out</button>'
     + '<button type="button" class="linkish" data-action="delete-account-data">Delete my saved data</button>'
@@ -1274,6 +1358,7 @@ async function boot() {
       + '<code>python -m http.server</code> inside <code>site/</code>.</div>';
     return;
   }
+  applyTheme(resolveTheme(deviceTheme(), null), false);
   renderHeader();
   cloudInit().then(renderAccount);
   render();
@@ -1285,15 +1370,17 @@ function renderHeader() {
   const d = state.data;
   const updated = new Date(d.generated_at);
   const when = Number.isFinite(updated.getTime())
-    ? updated.toLocaleString(undefined, { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })
+    ? updated.toLocaleString(undefined, { weekday: 'short', hour: 'numeric', minute: '2-digit' })
     : d.generated_at;
-  $('#week').textContent = 'Week ' + d.week + ', ' + d.season;
+  $('#week').textContent = 'Week ' + d.week + ' \u00b7 ' + d.season;
   const acc = d.accuracy || {};
-  $('#meta').innerHTML = '<span>Projections updated ' + esc(when) + '</span>'
-    + '<span class="pill pill-tier">' + esc(d.tier) + ' tier</span>';
+  $('#meta').innerHTML = '<span class="chip chip-live">Updated ' + esc(when) + '</span>'
+    + '<span class="chip pill-tier">' + esc(String(d.tier || '').charAt(0).toUpperCase() + String(d.tier || '').slice(1)) + '</span>';
   $('#accuracy').innerHTML = acc.same_position
-    ? 'The higher projection won <strong class="num">' + pct(acc.same_position) + '</strong> of same-position pairs and <strong class="num">'
-      + pct(acc.flex) + '</strong> of flex pairs, ' + esc(acc.seasons) + '. <span class="muted">(' + esc(acc.note) + '.)</span>'
+    ? '<div class="metric"><span class="metric-value">' + pct(acc.same_position) + '</span><span class="metric-label">Position calls</span></div>'
+      + '<div class="metric"><span class="metric-value">' + pct(acc.flex) + '</span><span class="metric-label">Flex calls</span></div>'
+      + '<div class="metric"><span class="metric-value">' + esc(acc.seasons) + '</span><span class="metric-label">Test season</span></div>'
+      + '<p class="metrics-note">Head-to-head calls the model got right in a season it was not tuned on.</p>'
     : '';
   $('#sample-banner').hidden = !state.sample;
   const stale = state.sample ? null : staleness(d.generated_at, state.now);
@@ -1326,6 +1413,7 @@ function render() {
   if (!state.index) return;
   const main = $('#main');
   let html = '';
+  if (state.themePrompt) html += themePromptHtml();
   if (state.flash) {
     html += '<div class="notice notice-' + state.flash.kind + '" role="status">' + state.flash.html + '</div>';
   }
@@ -1478,7 +1566,7 @@ function changeItem(change) {
   } else {
     text = 'Bench <strong>' + esc(change.out.name) + '</strong>';
   }
-  return '<li>' + gradePill(call.grade) + '<span>' + text + (call.because ? '<span class="psub">' + esc(call.because) + '</span>' : '')
+  return '<li>' + gradePill(call.grade) + '<span>' + text + meterHtml(call.p) + (call.because ? '<span class="psub">' + esc(call.because) + '</span>' : '')
     + (call.sameTeam ? '<span class="psub note">Same team: this treats them as independent, and they are not.</span>' : '')
     + '</span></li>';
 }
@@ -1582,7 +1670,7 @@ function viewLeague() {
         + '<td>' + playerCell(p) + row.warnings.map((w) => '<span class="psub warn">' + esc(w) + '</span>').join('')
         + (row.call.sameTeam ? '<span class="psub note">Same team as the alternative: correlation ignored.</span>' : '') + '</td>'
         + '<td class="r num">' + (p && p.projected ? fmt(p.mu) + '<span class="psub">&plusmn;' + fmt(p.sd) + '</span>' : '&ndash;') + '</td>'
-        + '<td class="call">' + gradePill(row.call.grade) + '<span class="psub">' + esc(row.call.because) + '</span></td>'
+        + '<td class="call">' + gradePill(row.call.grade) + meterHtml(row.call.p) + '<span class="psub">' + esc(row.call.because) + '</span></td>'
         + '<td class="alt" data-label="Best on bench">' + (row.alt ? esc(row.alt.name) + ' <span class="num muted">' + fmt(row.alt.mu) + '</span>' : '<span class="muted">&ndash;</span>') + '</td></tr>';
     }
     html += '</tbody></table></div>';
@@ -1697,7 +1785,7 @@ function viewCompare() {
     const pa = { name: a.name, team: a.team, pos: a.pos, mu: points(a, scoring), sd: sdFor(a, scoring) };
     const pb = { name: b.name, team: b.team, pos: b.pos, mu: points(b, scoring), sd: sdFor(b, scoring) };
     const call = compareCall(pa, pb);
-    html += '<div class="verdict">' + gradePill(call.grade) + '<p class="verdict-line">Start <strong>' + esc(call.pick.name) + '</strong></p>'
+    html += '<div class="verdict">' + gradePill(call.grade) + '<p class="verdict-line">Start <strong>' + esc(call.pick.name) + '</strong></p>' + meterHtml(call.p)
       + '<p>' + esc(describeCall(call)) + '. ' + esc(call.pick.name) + ' outscores ' + esc(call.other.name) + ' in <strong class="num">'
       + Math.round(call.p * 100) + '%</strong> of weeks like this.</p>'
       + '<div class="table-wrap"><table><thead><tr><th scope="col">Player</th><th scope="col" class="r">Pts</th><th scope="col" class="r">Spread</th></tr></thead><tbody>'
@@ -1819,6 +1907,17 @@ async function onClick(event) {
   }
   if (action === 'export') { exportLeagues(); return; }
   if (action === 'sign-in') { cloudSignIn(); return; }
+  if (action === 'toggle-theme') {
+    applyTheme(currentTheme() === 'dark' ? 'light' : 'dark', true);
+    if (state.themePrompt) { state.themePrompt = false; render(); }
+    return;
+  }
+  if (action === 'choose-theme') {
+    applyTheme(target.getAttribute('data-theme-choice'), true);
+    state.themePrompt = false;
+    render();
+    return;
+  }
   if (action === 'sign-out') { cloudSignOut(); return; }
   if (action === 'delete-account-data') { cloudDeleteData(); return; }
   if (action === 'refresh-sleeper' || action === 'refresh-one') {
@@ -2018,7 +2117,7 @@ if (typeof module !== 'undefined' && module.exports) {
     SCHEMA, SLEEPER_API, PRESETS, POSITION_BONUS, CLEAR_POINTS, LEAN_PROBABILITY, THIN_PROBABILITY, GRADES,
     DEFAULT_SD, ELIGIBLE, ESPN_SLOT_MAP,
     presetScoring, points, notProjected, splitNotProjected, sdFor, erf, normCdf, pBeats, gradeCall,
-    compareCall, describeCall, compareScoring, mergeLeagueSets, sameLeagueSets, SUPABASE_URL, SUPABASE_KEY, staleness, sleeperDue, rosterAgeDays, backupDue,
+    compareCall, describeCall, compareScoring, resolveTheme, needsThemePrompt, meterFill, THEMES, mergeLeagueSets, sameLeagueSets, SUPABASE_URL, SUPABASE_KEY, staleness, sleeperDue, rosterAgeDays, backupDue,
     STALE_HOURS, SLEEPER_REFRESH_HOURS, ESPN_ROSTER_WARN_DAYS, BACKUP_WARN_DAYS,
     validateProjections, buildIndex, injuryLevel, isStartingSlot, eligibleFor, hungarian,
     buildLineup, lineupChanges, espnSlots, espnCounts, normaliseName, parseEspnPaste, searchPlayers,
