@@ -1044,8 +1044,21 @@ function saveDeleted(deleted) {
 
 const cloud = { client: null, user: null, status: 'unavailable', syncedAt: null, error: null, timer: null, pulling: false };
 
-function cloudInit() {
+/* Is Google sign-in switched on for the project? Asked of Supabase's public settings, so the button
+ * appears the moment the provider is enabled and never before - a button that fails is worse than none. */
+async function googleEnabled() {
+  const url = SUPABASE_URL + '/auth/v1/settings';
+  try {
+    const response = await fetch(url, { headers: { apikey: SUPABASE_KEY }, cache: 'no-store' });
+    if (!response.ok) return false;
+    const settings = await response.json();
+    return Boolean(settings && settings.external && settings.external.google);
+  } catch (err) { return false; }
+}
+
+async function cloudInit() {
   if (typeof window === 'undefined' || !window.supabase || !window.supabase.createClient) return;
+  if (!(await googleEnabled())) return;
   try {
     cloud.client = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY, {
       auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true, flowType: 'pkce' },
@@ -1070,6 +1083,22 @@ async function cloudSignIn() {
   const back = window.location.origin + window.location.pathname;
   const { error } = await cloud.client.auth.signInWithOAuth({ provider: 'google', options: { redirectTo: back } });
   if (error) { cloud.error = error.message; renderAccount(); }
+}
+
+async function cloudDeleteData() {
+  if (!cloud.client || !cloud.user) return;
+  if (!window.confirm('Delete every league saved to your account? They stay in this browser until you clear it.')) return;
+  clearTimeout(cloud.timer);
+  const { error } = await cloud.client.from(SYNC_TABLE).delete().eq('user_id', cloud.user.id);
+  if (error) {
+    flash('bad', 'Could not delete your saved data: ' + esc(error.message));
+    render();
+    return;
+  }
+  saveDeleted({});
+  await cloud.client.auth.signOut();
+  flash('ok', 'Your saved data is deleted from the account and you are signed out.');
+  render();
 }
 
 async function cloudSignOut() {
@@ -1149,7 +1178,7 @@ function renderAccount() {
   if (!cloud.client) { box.innerHTML = ''; return; }
   if (!cloud.user) {
     box.innerHTML = '<button type="button" class="btn btn-small" data-action="sign-in">Sign in with Google</button>'
-      + '<span>to keep your leagues on every device.</span>'
+      + '<span>to keep your leagues on every device. <a href="privacy.html">Privacy</a></span>'
       + (cloud.error ? ' <span class="sync-bad">Sign-in failed: ' + esc(cloud.error) + '</span>' : '');
     return;
   }
@@ -1158,7 +1187,9 @@ function renderAccount() {
     : cloud.status === 'error' ? '<span class="sync-bad">Not synced: ' + esc(cloud.error || 'unknown error') + '. Your leagues are still saved here.</span>'
       : 'Leagues saved to your account';
   box.innerHTML = '<span class="who">' + esc(email) + '</span><span>' + status + '</span>'
-    + '<button type="button" class="btn btn-small" data-action="sign-out">Sign out</button>';
+    + '<button type="button" class="btn btn-small" data-action="sign-out">Sign out</button>'
+    + '<button type="button" class="linkish" data-action="delete-account-data">Delete my saved data</button>'
+    + '<a href="privacy.html">Privacy</a>';
 }
 
 function loadMeta() {
@@ -1244,8 +1275,7 @@ async function boot() {
     return;
   }
   renderHeader();
-  cloudInit();
-  renderAccount();
+  cloudInit().then(renderAccount);
   render();
   if (state.leagues.length) requestPersistence().then((granted) => { state.persisted = granted; });
   autoRefreshSleeper();
@@ -1790,6 +1820,7 @@ async function onClick(event) {
   if (action === 'export') { exportLeagues(); return; }
   if (action === 'sign-in') { cloudSignIn(); return; }
   if (action === 'sign-out') { cloudSignOut(); return; }
+  if (action === 'delete-account-data') { cloudDeleteData(); return; }
   if (action === 'refresh-sleeper' || action === 'refresh-one') {
     const which = state.leagues.filter((l) => l.platform === 'sleeper' && (action === 'refresh-sleeper' || l.id === id));
     target.disabled = true;
