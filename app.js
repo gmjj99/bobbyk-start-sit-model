@@ -1155,10 +1155,10 @@ function renderShotStatus() {
 function shotPanelHtml(league) {
   const shots = shotImporter();
   const shot = state.shot && state.shot.leagueId === league.id ? state.shot : null;
-  let html = '<section class="panel shot-panel"><h3>Import from screenshots</h3>';
+  let html = '<section class="panel shot-panel"><h3>Import your roster from screenshots</h3>';
   if (!shot || shot.stage === 'failed') {
-    html += '<p class="small muted">Screenshot your ESPN lineup, and the bench if it is further down. Up to '
-      + (shots ? shots.MAX_IMAGES : 4) + ' images. They are read on this device first.</p>'
+    html += '<p class="small">Take screenshots of your team in the ESPN app - the lineup, and the bench if you have to scroll - and choose them here. Up to '
+      + (shots ? shots.MAX_IMAGES : 4) + ' at once. Importing again replaces the roster.</p>'
       + (shot && shot.stage === 'failed' ? '<div class="notice notice-bad">Could not read those screenshots: ' + esc(shot.error) + '</div>' : '')
       + '<label class="btn btn-primary file-btn">Choose screenshots'
       + '<input type="file" accept="image/*" multiple data-input="shot-files" data-id="' + esc(league.id) + '"></label>';
@@ -1731,7 +1731,8 @@ function viewLeagues() {
   html += '<p class="muted small">Read from Sleeper\'s public API in your browser. Nothing is sent anywhere else.</p></section>';
 
   html += '<section class="panel"><h3>ESPN</h3>'
-    + '<p class="small">ESPN leagues are set up by hand. Automated access to ESPN breaches ESPN\'s terms - even for your own league - so this page never contacts ESPN.</p>'
+    + '<p class="small">Set the league\'s scoring and lineup slots once, then import your roster from screenshots of your ESPN team. '
+    + 'This page never contacts ESPN: automated access breaches ESPN\'s terms, even for your own league.</p>'
     + espnForm(null) + '</section>';
 
   html += '<section class="panel"><h3>Move leagues between devices</h3>'
@@ -1786,9 +1787,11 @@ function viewLeague() {
       + '</code>. Your league scores these; this page cannot see them, so a player who lives on them is under-rated here.</div>';
   }
 
+  const emptyEspn = league.platform === 'espn' && !(league.roster || []).length;
+  if (emptyEspn) html += shotPanelHtml(league);
   html += '<section class="panel"><div class="card-head"><h3>Lineup</h3><p class="num strong">' + fmt(lineup.total) + ' pts</p></div>';
   if (!(league.roster || []).length) {
-    html += '<p>No roster yet.' + (league.platform === 'espn' ? ' Paste it below.' : ' Refresh from Sleeper.') + '</p>';
+    html += '<p>No roster yet.' + (league.platform === 'espn' ? ' Import it from screenshots above.' : ' Refresh from Sleeper.') + '</p>';
   } else {
     html += '<div class="table-wrap"><table class="lineup"><thead><tr><th scope="col">Slot</th><th scope="col">Start</th>'
       + '<th scope="col" class="r">Pts</th><th scope="col">Call</th><th scope="col">Best on bench</th></tr></thead><tbody>';
@@ -1821,15 +1824,12 @@ function viewLeague() {
   html += '</section>';
 
   if (league.platform === 'espn') {
-    html += shotPanelHtml(league);
+    if (!emptyEspn) html += shotPanelHtml(league);
     html += '<section class="panel"><h3>Roster</h3>'
-      + '<form data-form="espn-paste" class="stack"><input type="hidden" name="id" value="' + esc(league.id) + '">'
-      + '<label for="es-paste">Paste from your ESPN roster page</label>'
-      + '<textarea id="es-paste" name="paste" rows="8" placeholder="Select the roster table on ESPN, copy, paste here. Pasting again replaces the roster."></textarea>'
-      + '<div><button class="btn btn-primary" type="submit">Use this roster</button></div></form>';
+      + '<p class="small muted">Or add players one at a time.</p>';
     if (league.unmatched && league.unmatched.length) {
-      html += '<div class="notice notice-warn"><strong>These lines did not match anyone in this week\'s file:</strong><ul class="plain mono">'
-        + league.unmatched.map((l) => '<li>' + esc(l) + '</li>').join('') + '</ul>Add them with the picker below if they are players.</div>';
+      html += '<div class="notice notice-warn"><strong>These did not match anyone in this week\'s file:</strong><ul class="plain mono">'
+        + league.unmatched.map((l) => '<li>' + esc(l) + '</li>').join('') + '</ul>Add them with the search below if they are players.</div>';
     }
     html += '<div class="stack"><label for="picker">Add a player</label><input id="picker" data-input="picker" data-id="' + esc(league.id)
       + '" autocomplete="off" placeholder="Start typing a name" aria-controls="picker-results">'
@@ -1842,6 +1842,11 @@ function viewLeague() {
           + esc(e ? e.name : id) + '">Remove</button></li>';
       }).join('') + '</ul>';
     }
+    html += '<details class="paste-option"><summary>Paste roster text instead</summary>'
+      + '<form data-form="espn-paste" class="stack"><input type="hidden" name="id" value="' + esc(league.id) + '">'
+      + '<label for="es-paste">Copied from the roster table on ESPN\'s website</label>'
+      + '<textarea id="es-paste" name="paste" rows="6" placeholder="Pasting replaces the roster."></textarea>'
+      + '<div><button class="btn" type="submit">Use pasted roster</button></div></form></details>';
     html += '</section><section class="panel"><details><summary>Slots</summary>' + espnForm(league) + '</details></section>';
   }
 
@@ -2158,7 +2163,7 @@ async function onSubmit(event) {
       state.leagues = state.leagues.concat([league]);
       saveLeagues();
       state.openLeague = league.id;
-      flash('ok', 'Added. Now paste the roster from ESPN.');
+      flash('ok', 'Added. Now import your roster from screenshots.');
     }
     render();
     return;

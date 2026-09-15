@@ -609,6 +609,9 @@ details[open] > summary { margin-bottom: var(--s-3); }
 @keyframes spin { to { transform: rotate(360deg); } }
 .pill-slot { color: var(--accent-strong); background: var(--accent-soft); min-width: 3.2em; text-align: center; }
 .shot-list li { justify-content: flex-start; }
+.shot-panel { border-color: color-mix(in srgb, var(--accent) 45%, var(--rule)); }
+.paste-option { margin-top: var(--s-4); }
+.paste-option > summary { font-family: var(--font); font-size: var(--t-sm); font-weight: 600; color: var(--ink-2); }
 
 /* The one-time theme question after a first sign-in. */
 .theme-prompt { border-color: var(--accent); box-shadow: 0 0 0 4px var(--glow), var(--shadow); }
