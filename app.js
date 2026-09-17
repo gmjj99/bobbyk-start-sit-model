@@ -1682,6 +1682,51 @@ function playerCell(person) {
     + (shape ? '<span class="psub">' + shape + '</span>' : '');
 }
 
+/* The bench, as slots of its own rather than a line of names.
+
+ * Michael, 17 September 2026: "can we also make sure to show bench as slots of their own at the
+ * bottom, I cant tell the boom and bust percentages for them". It used to be a comma-separated
+ * paragraph of name and points, which is the one shape that cannot carry the range and the boom
+ * and bust chances - and the bench is where they matter most, because a bench player is a decision
+ * you have not made yet.
+ *
+ * `behind` is the honest version of "why is he not starting": the startable player in a slot he is
+ * eligible for who is closest above him. A gap of 0.3 points is a different sentence to a gap of
+ * nine, and the table should say which. */
+function benchGap(player, lineup) {
+  let best = null;
+  for (const row of lineup.rows) {
+    const starter = row.player;
+    if (!starter || !starter.projected || !eligibleFor(row.slot, player.pos)) continue;
+    const gap = starter.mu - player.mu;
+    if (gap >= 0 && (best === null || gap < best.gap)) best = { gap: gap, starter: starter, slot: row.slot };
+  }
+  return best;
+}
+
+function benchTableHtml(lineup, league) {
+  let html = '<h4>Bench</h4><div class="table-wrap"><table class="lineup bench"><thead><tr>'
+    + '<th scope="col">Slot</th><th scope="col">Player</th>'
+    + '<th scope="col" class="r">Pts</th><th scope="col">Why not starting</th></tr></thead><tbody>';
+  lineup.bench.forEach((player, i) => {
+    const behind = player.projected ? benchGap(player, lineup) : null;
+    let why;
+    if (!player.projected) {
+      why = '<span class="muted">No projection this week.</span>';
+    } else if (!behind) {
+      why = '<span class="muted">No slot on this roster takes him.</span>';
+    } else {
+      why = '<span class="num">' + fmt(behind.gap) + '</span> behind ' + esc(behind.starter.name)
+        + ' <span class="muted">(' + esc(SLOT_LABEL[behind.slot] || behind.slot) + ')</span>';
+    }
+    html += '<tr><th scope="row" class="slot">BN' + (i + 1) + '</th>'
+      + '<td>' + playerCell(player) + '</td>'
+      + '<td class="r num">' + (player.projected ? fmt(player.mu) + '<span class="psub">&plusmn;' + fmt(player.sd) + '</span>' : '&ndash;') + '</td>'
+      + '<td class="why" data-label="Why not starting">' + why + '</td></tr>';
+  });
+  return html + '</tbody></table></div>';
+}
+
 function leagueScoringLabel(league) {
   const s = league.scoring || {};
   const rec = num(s.rec);
@@ -1897,7 +1942,7 @@ function viewLeague() {
       html += '<p class="small ok-line">Matches your current lineup.</p>';
     }
     if (lineup.bench.length) {
-      html += '<h4>Bench</h4><p class="small">' + lineup.bench.map((b) => esc(b.name) + injuryPill(b) + ' <span class="num muted">' + fmt(b.mu) + '</span>').join(', ') + '</p>';
+      html += benchTableHtml(lineup, league);
     }
     if (lineup.lockedBench.length) {
       html += '<p class="small muted">Already playing, left on the bench: ' + lineup.lockedBench.map((b) => esc(b.name)).join(', ') + '.</p>';
@@ -2373,7 +2418,7 @@ if (typeof module !== 'undefined' && module.exports) {
     presetScoring, points, notProjected, splitNotProjected, sdFor, erf, normCdf, pBeats, gradeCall,
     compareCall, describeCall, compareScoring, resolveTheme, needsThemePrompt, meterFill, THEMES, mergeLeagueSets, sameLeagueSets, SUPABASE_URL, SUPABASE_KEY, staleness, sleeperDue, rosterAgeDays, backupDue,
     STALE_HOURS, SLEEPER_REFRESH_HOURS, ESPN_ROSTER_WARN_DAYS, BACKUP_WARN_DAYS,
-    validateProjections, buildIndex, injuryLevel, isStartingSlot, eligibleFor, hungarian,
+    validateProjections, buildIndex, injuryLevel, isStartingSlot, eligibleFor, hungarian, benchGap, benchTableHtml,
     buildLineup, lineupChanges, espnSlots, espnCounts, normaliseName, parseEspnPaste, pasteKeys, PASTE_SLOT, searchPlayers,
     canonicalTeam, SleeperError, sleeperUser, sleeperLeague, importSleeperUser, sleeperTeams,
     sleeperToSaved, validateLeaguesFile, mergeLeagues, summariseWeek, rosterFromPaste, esc,

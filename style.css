@@ -833,3 +833,7 @@ dl.grades dd { margin: 0; font-size: var(--t-sm); }
     scroll-behavior: auto !important;
   }
 }
+
+/* The bench table. Same shape as the lineup above it, quieter: these are the calls not made. */
+.lineup.bench th.slot { color: var(--ink-3); font-weight: 500; }
+.lineup.bench td.why { color: var(--ink-2); font-size: var(--t-xs); }
