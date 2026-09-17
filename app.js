@@ -1583,15 +1583,13 @@ function renderHeader() {
     ? updated.toLocaleString(undefined, { weekday: 'short', hour: 'numeric', minute: '2-digit' })
     : d.generated_at;
   $('#week').textContent = 'Week ' + d.week + ' \u00b7 ' + d.season;
-  const acc = d.accuracy || {};
+  const next = d.next_update ? new Date(d.next_update) : null;
+  const nextText = next && Number.isFinite(next.getTime())
+    ? next.toLocaleString(undefined, { weekday: 'short', hour: 'numeric', minute: '2-digit' }) : '';
   $('#meta').innerHTML = '<span class="chip chip-live">Updated ' + esc(when) + '</span>'
-    + '<span class="chip pill-tier">' + esc(String(d.tier || '').charAt(0).toUpperCase() + String(d.tier || '').slice(1)) + '</span>';
-  $('#accuracy').innerHTML = acc.same_position
-    ? '<div class="metric"><span class="metric-value">' + pct(acc.same_position) + '</span><span class="metric-label">Position calls</span></div>'
-      + '<div class="metric"><span class="metric-value">' + pct(acc.flex) + '</span><span class="metric-label">Flex calls</span></div>'
-      + '<div class="metric"><span class="metric-value">' + esc(acc.seasons) + '</span><span class="metric-label">Test season</span></div>'
-      + '<p class="metrics-note">Head-to-head calls the model got right in a season it was not tuned on.</p>'
-    : '';
+    + (nextText ? '<span class="chip">Next update ' + esc(nextText) + '</span>' : '')
+    + (d.tier && d.tier !== 'public' ? '<span class="chip pill-tier">' + esc(d.tier) + '</span>' : '');
+  $('#accuracy').innerHTML = '';
   $('#sample-banner').hidden = !state.sample;
   const stale = state.sample ? null : staleness(d.generated_at, state.now);
   const staleBanner = $('#stale-banner');
@@ -1624,6 +1622,9 @@ function setView(view) {
 
 function render() {
   if (!state.index) return;
+  // The account line lives in the header, outside main: without this it keeps whatever it last
+  // said, which left "Syncing..." on screen long after the sync had finished.
+  renderAccount();
   const main = $('#main');
   let html = '';
   if (state.themePrompt) html += themePromptHtml();
@@ -2034,8 +2035,13 @@ function viewHow() {
   return '<div class="section-head"><h2>How this works</h2></div><section class="panel prose">'
     + '<p>Each player\'s projection is built stat by stat - passing yards, receptions, touchdowns - from betting markets where a book has priced the player, '
     + 'and from recent per-game stats where none has. Your league\'s scoring is applied to those stats in your browser, so a PPR league and a standard league get different numbers from the same file.</p>'
-    + '<p>It is not a guarantee. Over ' + esc((d.accuracy || {}).seasons || 'past seasons') + ', the higher projection beat the lower one '
-    + pct((d.accuracy || {}).same_position) + ' of the time among same-position pairs. Close calls are close for a reason.</p>'
+    + '<p>It is not a guarantee. Close calls are close for a reason.</p>'
+    + '<div class="metrics">'
+    + '<div class="metric"><span class="metric-value">' + pct((d.accuracy || {}).same_position) + '</span><span class="metric-label">Position calls</span></div>'
+    + '<div class="metric"><span class="metric-value">' + pct((d.accuracy || {}).flex) + '</span><span class="metric-label">Flex calls</span></div>'
+    + '<div class="metric"><span class="metric-value">' + esc((d.accuracy || {}).seasons || '') + '</span><span class="metric-label">Test season</span></div>'
+    + '<p class="metrics-note">Of two startable players in the same week, how often the higher projection outscored the lower - measured on a season the model was not tuned on.</p></div>'
+    + '<p class="small muted">This page shows the ' + esc(d.tier || 'public') + ' projections, updated after every capture window: Wednesday, Thursday and Friday evening, and twice on Sunday morning.</p>'
     + '<h3>What the grades mean</h3><dl class="grades">'
     + '<dt>' + gradePill('clear') + '</dt><dd>At least ' + CLEAR_POINTS + ' projected points apart. The projection settles it.</dd>'
     + '<dt>' + gradePill('lean') + '</dt><dd>Closer than that, but the pick wins ' + Math.round(LEAN_PROBABILITY * 100) + '% of the time or more.</dd>'
