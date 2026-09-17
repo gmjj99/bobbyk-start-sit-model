@@ -161,42 +161,39 @@ function sdFor(player, scoring) {
   return Math.max(SD_FLOOR, base * points(player, scoring) / half);
 }
 
-/* What a week like this one usually looks like for a player projected like this one: the 10th and
- * 90th percentile of what similar players actually scored, and how often they busted or boomed.
- * The projections file carries these in half-PPR points; they are rescaled to the league exactly as
- * the spread is, so a full-PPR league sees full-PPR numbers. */
+/* What a week like this one usually looks like for a player projected like this one: the range it
+ * lands in most weeks, and how often it ends in a bust or a boom.
+ *
+ * Numbers, not labels. This carried five - high floor, high ceiling, boom or bust, bust risk,
+ * steady - until 16 September 2026, when Michael asked for them to go. A label is a threshold
+ * wearing the clothes of a fact: a 19% boom chance read "steady" and 21% read "high ceiling", and
+ * nothing on the page told you those were the same player. The percentages say it themselves.
+ *
+ * `shape_source` says where the shape came from: "market" when the books priced the player at
+ * several different yardages and the spread of those prices is his distribution, "history" when it
+ * is the 10th and 90th percentile of what similar players actually scored. Half-PPR in the file;
+ * rescaled to the league exactly as the spread is, so a full-PPR league sees full-PPR numbers. */
 let BUST_AT_TEXT = '5';
 let BOOM_AT_TEXT = '20';
-const BOOM_CHANCE = 0.20;
-const BUST_CHANCE = 0.30;
-const SAFE_CHANCE = 0.15;
-const RISKY_CHANCE = 0.40;
-
-function outlookLabel(player) {
-  if (!player || !Number.isFinite(Number(player.p_boom)) || !Number.isFinite(Number(player.p_bust))) return null;
-  const boom = Number(player.p_boom);
-  const bust = Number(player.p_bust);
-  if (boom >= BOOM_CHANCE && bust >= BUST_CHANCE) return 'boom or bust';
-  if (boom >= BOOM_CHANCE) return 'high ceiling';
-  if (bust >= RISKY_CHANCE) return 'bust risk';
-  if (bust <= SAFE_CHANCE) return 'high floor';
-  return 'steady';
-}
 
 function outlook(player, scoring) {
-  const label = outlookLabel(player);
-  if (!label) return null;
+  if (!player || !Number.isFinite(Number(player.p_boom)) || !Number.isFinite(Number(player.p_bust))) return null;
   const half = points(player, PRESETS.half.scoring);
   const scale = half > 0 ? points(player, scoring) / half : 1;
-  return { label: label, floor: num(player.floor) * scale, ceiling: num(player.ceiling) * scale,
-           bust: Number(player.p_bust), boom: Number(player.p_boom) };
+  return { floor: num(player.floor) * scale, ceiling: num(player.ceiling) * scale,
+           bust: Number(player.p_bust), boom: Number(player.p_boom),
+           source: player.shape_source === 'market' ? 'market' : 'history' };
 }
 
 function outlookHtml(player, scoring) {
   const shape = outlook(player, scoring);
   if (!shape) return '';
-  return '<span class="pill outlook outlook-' + shape.label.replace(/\s+/g, '-') + '">' + esc(shape.label) + '</span>'
-    + ' <span class="num muted">' + fmt(shape.floor) + '&ndash;' + fmt(shape.ceiling) + '</span>';
+  const chance = (p) => Math.round(p * 100) + '%';
+  return '<span class="shape" title="Most weeks land in this range. Boom is '
+    + esc(BOOM_AT_TEXT) + '+ points, bust is ' + esc(BUST_AT_TEXT) + ' or fewer, in half PPR.">'
+    + '<span class="num">' + fmt(shape.floor) + '&ndash;' + fmt(shape.ceiling) + '</span>'
+    + ' <span class="muted">boom</span> <span class="num">' + chance(shape.boom) + '</span>'
+    + ' <span class="muted">bust</span> <span class="num">' + chance(shape.bust) + '</span></span>';
 }
 
 /* Abramowitz and Stegun 7.1.26, |error| < 1.5e-7. Odd by construction, so Phi(-x) = 1 - Phi(x)
@@ -2049,17 +2046,12 @@ function viewHow() {
     + '<dt>' + gradePill('level') + '</dt><dd>Below ' + Math.round(THIN_PROBABILITY * 100) + '%. Nothing here separates them; start whoever you would rather explain afterwards.</dd>'
     + '<dt>' + gradePill('forced') + '</dt><dd>Nobody else on the roster could fill the slot. Not a decision.</dd></dl>'
     + '<h3>Floor, ceiling and boom or bust</h3>'
-    + '<p>Beside each player is the range a week like his usually lands in: the 10th and 90th percentile of what '
-    + 'players at his position with his projection actually scored. The label is about that shape, not about how good he is.</p>'
-    + '<dl class="grades">'
-    + '<dt><span class="pill outlook outlook-high-floor">high floor</span></dt><dd>Busts (' + BUST_AT_TEXT + ' or fewer) less than '
-    + Math.round(SAFE_CHANCE * 100) + '% of the time. Start him and forget him.</dd>'
-    + '<dt><span class="pill outlook outlook-high-ceiling">high ceiling</span></dt><dd>Booms (' + BOOM_AT_TEXT + '+) at least '
-    + Math.round(BOOM_CHANCE * 100) + '% of the time, without the bust risk.</dd>'
-    + '<dt><span class="pill outlook outlook-boom-or-bust">boom or bust</span></dt><dd>Both ends: a real shot at a big week and a real chance of nothing.</dd>'
-    + '<dt><span class="pill outlook outlook-bust-risk">bust risk</span></dt><dd>Busts ' + Math.round(RISKY_CHANCE * 100)
-    + '% of the time or more, with little upside to pay for it.</dd>'
-    + '<dt><span class="pill outlook outlook-steady">steady</span></dt><dd>Neither end stands out.</dd></dl>'
+    + '<p>Beside each player is the range most of his weeks land in, then how often a week like his ends big or ends '
+    + 'nowhere. <strong>Boom</strong> is ' + BOOM_AT_TEXT + ' points or more, <strong>bust</strong> is ' + BUST_AT_TEXT
+    + ' or fewer, both in half PPR and rescaled to your league. Two players with the same projection can have very '
+    + 'different weeks, and this is where that shows.</p>'
+    + '<p>It is read from history: the 10th and 90th percentile of what players at his position, with his projection, '
+    + 'actually scored. So it describes the shape of a week like his, not him specifically.</p>'
     + '<h3>What it cannot see</h3><ul>'
     + '<li>Only these stats are projected: <span id="not-projected-list">' + esc((d.stats || []).join(', ')) + '</span>. First-down points, yardage bonuses, return yards and IDP are listed as "not projected" on each league.</li>'
     + '<li>D/ST and kickers are rough: one number each, on default scoring, not your league\'s.</li>'
@@ -2377,7 +2369,7 @@ function exportLeagues() {
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = {
     SCHEMA, SLEEPER_API, PRESETS, POSITION_BONUS, CLEAR_POINTS, LEAN_PROBABILITY, THIN_PROBABILITY, GRADES,
-    DEFAULT_SD, ELIGIBLE, ESPN_SLOT_MAP, outlookLabel, outlook, BOOM_CHANCE, BUST_CHANCE, SAFE_CHANCE, RISKY_CHANCE,
+    DEFAULT_SD, ELIGIBLE, ESPN_SLOT_MAP, outlook, outlookHtml,
     presetScoring, points, notProjected, splitNotProjected, sdFor, erf, normCdf, pBeats, gradeCall,
     compareCall, describeCall, compareScoring, resolveTheme, needsThemePrompt, meterFill, THEMES, mergeLeagueSets, sameLeagueSets, SUPABASE_URL, SUPABASE_KEY, staleness, sleeperDue, rosterAgeDays, backupDue,
     STALE_HOURS, SLEEPER_REFRESH_HOURS, ESPN_ROSTER_WARN_DAYS, BACKUP_WARN_DAYS,

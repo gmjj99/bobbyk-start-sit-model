@@ -608,12 +608,12 @@ details[open] > summary { margin-bottom: var(--s-3); }
 }
 @keyframes spin { to { transform: rotate(360deg); } }
 .pill-slot { color: var(--accent-strong); background: var(--accent-soft); min-width: 3.2em; text-align: center; }
-.outlook { font-size: var(--t-2xs); letter-spacing: 0.04em; }
-.outlook-high-floor { color: var(--clear); background: var(--clear-bg); }
-.outlook-high-ceiling { color: var(--lean); background: var(--lean-bg); }
-.outlook-boom-or-bust { color: var(--forced); background: var(--forced-bg); }
-.outlook-bust-risk { color: var(--inj-out); background: var(--inj-out-bg); }
-.outlook-steady { color: var(--ink-2); background: var(--surface-2); }
+/* The shape of a player's week: range, then the boom and bust chances. The five coloured labels
+   this replaced (high floor, high ceiling, boom or bust, bust risk, steady) went on 16 September
+   2026 - a threshold dressed as a fact, where 19% and 21% read as different players. */
+.shape { font-size: var(--t-2xs); letter-spacing: 0.02em; white-space: nowrap; }
+.shape .num { color: var(--ink-2); }
+.shape .muted { letter-spacing: 0.04em; text-transform: uppercase; font-size: 0.92em; }
 .shot-list li { justify-content: flex-start; }
 .shot-panel { border-color: color-mix(in srgb, var(--accent) 45%, var(--rule)); }
 .paste-option { margin-top: var(--s-4); }
