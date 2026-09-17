@@ -161,6 +161,44 @@ function sdFor(player, scoring) {
   return Math.max(SD_FLOOR, base * points(player, scoring) / half);
 }
 
+/* What a week like this one usually looks like for a player projected like this one: the 10th and
+ * 90th percentile of what similar players actually scored, and how often they busted or boomed.
+ * The projections file carries these in half-PPR points; they are rescaled to the league exactly as
+ * the spread is, so a full-PPR league sees full-PPR numbers. */
+let BUST_AT_TEXT = '5';
+let BOOM_AT_TEXT = '20';
+const BOOM_CHANCE = 0.20;
+const BUST_CHANCE = 0.30;
+const SAFE_CHANCE = 0.15;
+const RISKY_CHANCE = 0.40;
+
+function outlookLabel(player) {
+  if (!player || !Number.isFinite(Number(player.p_boom)) || !Number.isFinite(Number(player.p_bust))) return null;
+  const boom = Number(player.p_boom);
+  const bust = Number(player.p_bust);
+  if (boom >= BOOM_CHANCE && bust >= BUST_CHANCE) return 'boom or bust';
+  if (boom >= BOOM_CHANCE) return 'high ceiling';
+  if (bust >= RISKY_CHANCE) return 'bust risk';
+  if (bust <= SAFE_CHANCE) return 'high floor';
+  return 'steady';
+}
+
+function outlook(player, scoring) {
+  const label = outlookLabel(player);
+  if (!label) return null;
+  const half = points(player, PRESETS.half.scoring);
+  const scale = half > 0 ? points(player, scoring) / half : 1;
+  return { label: label, floor: num(player.floor) * scale, ceiling: num(player.ceiling) * scale,
+           bust: Number(player.p_bust), boom: Number(player.p_boom) };
+}
+
+function outlookHtml(player, scoring) {
+  const shape = outlook(player, scoring);
+  if (!shape) return '';
+  return '<span class="pill outlook outlook-' + shape.label.replace(/\s+/g, '-') + '">' + esc(shape.label) + '</span>'
+    + ' <span class="num muted">' + fmt(shape.floor) + '&ndash;' + fmt(shape.ceiling) + '</span>';
+}
+
 /* Abramowitz and Stegun 7.1.26, |error| < 1.5e-7. Odd by construction, so Phi(-x) = 1 - Phi(x)
  * holds exactly and P(A beats B) + P(B beats A) is exactly one. */
 function erf(x) {
@@ -409,6 +447,9 @@ function buildLineup(league, index, now) {
       kickoff: entry.kickoff, basis: entry.basis, injury: entry.injury || null,
       injuryLevel: injuryLevel(entry.injury), projected: true,
       mu: mu, sd: sdFor(entry, scoring), locked: kickedOff(entry, now),
+      // Kept whole so the row can show his usual week - floor, ceiling, boom and bust - without
+      // every field having to be copied across one at a time.
+      entry: entry,
     };
   }
   const currentStarters = new Set(current ? current.filter(Boolean) : []);
@@ -1561,6 +1602,9 @@ function renderHeader() {
         + ' old.</strong> An update was probably missed, so injuries and lines since then are not in them. Check news before you lock anything in.'
       : '';
   }
+  const shape = d.shape || {};
+  if (Number.isFinite(Number(shape.bust_at))) BUST_AT_TEXT = String(shape.bust_at);
+  if (Number.isFinite(Number(shape.boom_at))) BOOM_AT_TEXT = String(shape.boom_at);
   $('#attribution').innerHTML = (d.attribution || []).map((a) => '<li>' + esc(a) + '</li>').join('');
 }
 
@@ -1631,10 +1675,13 @@ function playerCell(person) {
   if (!person) return '<span class="muted">empty</span>';
   if (!person.projected) return esc(person.name) + ' <span class="muted">no projection</span>';
   const where = person.opp ? (person.home ? 'v ' : '@ ') + person.opp : '';
+  const league = findLeague(state.openLeague);
+  const shape = outlookHtml(person.entry || person, league ? league.scoring : PRESETS.half.scoring);
   return '<span class="pname">' + esc(person.name) + '</span>' + injuryPill(person)
     + (person.locked ? ' <span class="pill pill-locked">playing</span>' : '')
     + '<span class="psub">' + esc(person.pos) + ' ' + esc(person.team) + ' ' + esc(where)
-    + (person.basis === 'stats' ? ' &middot; stats only' : '') + '</span>';
+    + (person.basis === 'stats' ? ' &middot; stats only' : '') + '</span>'
+    + (shape ? '<span class="psub">' + shape + '</span>' : '');
 }
 
 function leagueScoringLabel(league) {
@@ -1963,10 +2010,10 @@ function viewCompare() {
     html += '<div class="verdict">' + gradePill(call.grade) + '<p class="verdict-line">Start <strong>' + esc(call.pick.name) + '</strong></p>' + meterHtml(call.p)
       + '<p>' + esc(describeCall(call)) + '. ' + esc(call.pick.name) + ' outscores ' + esc(call.other.name) + ' in <strong class="num">'
       + Math.round(call.p * 100) + '%</strong> of weeks like this.</p>'
-      + '<div class="table-wrap"><table><thead><tr><th scope="col">Player</th><th scope="col" class="r">Pts</th><th scope="col" class="r">Spread</th></tr></thead><tbody>'
+      + '<div class="table-wrap"><table><thead><tr><th scope="col">Player</th><th scope="col" class="r">Pts</th><th scope="col">Usual week</th></tr></thead><tbody>'
       + [[a, pa], [b, pb]].map((pair) => '<tr><td>' + esc(pair[1].name) + injuryPill(pair[0]) + '<span class="psub">' + esc(pair[0].pos) + ' '
         + esc(pair[0].team) + (pair[0].basis === 'stats' ? ' &middot; stats only' : '') + '</span></td><td class="r num">' + fmt(pair[1].mu)
-        + '</td><td class="r num">&plusmn;' + fmt(pair[1].sd) + '</td></tr>').join('')
+        + '</td><td>' + (outlookHtml(pair[0], scoring) || '<span class="muted">&ndash;</span>') + '</td></tr>').join('')
       + '</tbody></table></div>';
     if (call.sameTeam) {
       html += '<p class="note">Same team. The probability treats them as independent, and teammates are not: a good day for the offence lifts both.</p>';
@@ -1995,6 +2042,18 @@ function viewHow() {
     + '<dt>' + gradePill('thin') + '</dt><dd>' + Math.round(THIN_PROBABILITY * 100) + '-' + Math.round(LEAN_PROBABILITY * 100) + '%. Real, and small.</dd>'
     + '<dt>' + gradePill('level') + '</dt><dd>Below ' + Math.round(THIN_PROBABILITY * 100) + '%. Nothing here separates them; start whoever you would rather explain afterwards.</dd>'
     + '<dt>' + gradePill('forced') + '</dt><dd>Nobody else on the roster could fill the slot. Not a decision.</dd></dl>'
+    + '<h3>Floor, ceiling and boom or bust</h3>'
+    + '<p>Beside each player is the range a week like his usually lands in: the 10th and 90th percentile of what '
+    + 'players at his position with his projection actually scored. The label is about that shape, not about how good he is.</p>'
+    + '<dl class="grades">'
+    + '<dt><span class="pill outlook outlook-high-floor">high floor</span></dt><dd>Busts (' + BUST_AT_TEXT + ' or fewer) less than '
+    + Math.round(SAFE_CHANCE * 100) + '% of the time. Start him and forget him.</dd>'
+    + '<dt><span class="pill outlook outlook-high-ceiling">high ceiling</span></dt><dd>Booms (' + BOOM_AT_TEXT + '+) at least '
+    + Math.round(BOOM_CHANCE * 100) + '% of the time, without the bust risk.</dd>'
+    + '<dt><span class="pill outlook outlook-boom-or-bust">boom or bust</span></dt><dd>Both ends: a real shot at a big week and a real chance of nothing.</dd>'
+    + '<dt><span class="pill outlook outlook-bust-risk">bust risk</span></dt><dd>Busts ' + Math.round(RISKY_CHANCE * 100)
+    + '% of the time or more, with little upside to pay for it.</dd>'
+    + '<dt><span class="pill outlook outlook-steady">steady</span></dt><dd>Neither end stands out.</dd></dl>'
     + '<h3>What it cannot see</h3><ul>'
     + '<li>Only these stats are projected: <span id="not-projected-list">' + esc((d.stats || []).join(', ')) + '</span>. First-down points, yardage bonuses, return yards and IDP are listed as "not projected" on each league.</li>'
     + '<li>D/ST and kickers are rough: one number each, on default scoring, not your league\'s.</li>'
@@ -2312,7 +2371,7 @@ function exportLeagues() {
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = {
     SCHEMA, SLEEPER_API, PRESETS, POSITION_BONUS, CLEAR_POINTS, LEAN_PROBABILITY, THIN_PROBABILITY, GRADES,
-    DEFAULT_SD, ELIGIBLE, ESPN_SLOT_MAP,
+    DEFAULT_SD, ELIGIBLE, ESPN_SLOT_MAP, outlookLabel, outlook, BOOM_CHANCE, BUST_CHANCE, SAFE_CHANCE, RISKY_CHANCE,
     presetScoring, points, notProjected, splitNotProjected, sdFor, erf, normCdf, pBeats, gradeCall,
     compareCall, describeCall, compareScoring, resolveTheme, needsThemePrompt, meterFill, THEMES, mergeLeagueSets, sameLeagueSets, SUPABASE_URL, SUPABASE_KEY, staleness, sleeperDue, rosterAgeDays, backupDue,
     STALE_HOURS, SLEEPER_REFRESH_HOURS, ESPN_ROSTER_WARN_DAYS, BACKUP_WARN_DAYS,
