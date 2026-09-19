@@ -837,3 +837,22 @@ dl.grades dd { margin: 0; font-size: var(--t-sm); }
 /* The bench table. Same shape as the lineup above it, quieter: these are the calls not made. */
 .lineup.bench th.slot { color: var(--ink-3); font-weight: 500; }
 .lineup.bench td.why { color: var(--ink-2); font-size: var(--t-xs); }
+
+
+/* ---- Roster moves: waivers, trades, and the switch you already made ---------------------------
+   The page holds ESPN rosters by hand, so these are the controls that keep it honest between
+   Wednesday's waivers and a Sunday trade. */
+.notice-ask { border-left: 3px solid var(--accent); background: var(--surface-2); }
+.waiver-ask-list li { display: flex; align-items: center; justify-content: space-between;
+  gap: 12px; padding: 5px 0; }
+.tx-panel .card-head { align-items: center; }
+.tx-roster { max-height: 15rem; overflow-y: auto; }
+.picker-results .pick.picked { font-weight: 600; color: var(--accent); }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.chip { border: 1px solid var(--line); border-radius: 999px; background: var(--surface);
+  color: var(--ink); font: inherit; font-size: var(--t-xs); padding: 3px 10px; cursor: pointer; }
+.chip:hover { border-color: var(--accent); color: var(--accent); }
+.btn-quiet { background: transparent; border-color: var(--line); color: var(--ink-2); }
+/* The one-line reason under a call. Michael, 19 September 2026: brief, conversational, and it
+   explains WHY rather than repeating how big the gap is. */
+.psub.why { color: var(--ink-2); font-style: italic; }

@@ -548,6 +548,66 @@ function describeCall(call) {
   }
 }
 
+/* One sentence on WHY the call went this way, rather than how big it is.
+ *
+ * describeCall already says the size - the gap and the head-to-head percentage - and Michael asked
+ * for the other half: "a single concise bullet on why the decision is being recommended or why the
+ * slight edge points in one way." So this reaches for the reason that actually separates these two
+ * players, in the order a person would think of them: somebody hurt, then who the market will
+ * price at all, then the shape of the week, and only then the projection itself.
+ *
+ * Written the way it would be said out loud. It is the line somebody reads before trusting the
+ * page with their lineup, and a phrase like "market basis, delta 3.2" is not an explanation. */
+function reasonFor(pick, other, call) {
+  if (!pick || !other) return '';
+  const name = pick.name;
+  const them = other.name;
+
+  if (other.injuryLevel === 'out') {
+    return them + ' is ruled out, so this is not really a choice.';
+  }
+  if (other.injuryLevel === 'questionable' || other.injuryLevel === 'doubtful') {
+    return them + ' is carrying an injury tag, and a projection assumes the version of him that '
+      + 'was healthy when those games were played.';
+  }
+  if (pick.basis === 'market' && other.basis === 'stats') {
+    return 'The books have put a number on ' + name + ' this week and none on ' + them + ', which '
+      + 'usually says more about ' + them + ' than his recent games do.';
+  }
+  if (pick.basis === 'stats' && other.basis === 'market') {
+    return name + ' is running on recent form rather than a betting line, so the edge here is '
+      + 'thinner than the points make it look.';
+  }
+
+  const shape = (person) => (person && person.entry ? person.entry : person) || {};
+  const pickBust = Number(shape(pick).p_bust);
+  const otherBust = Number(shape(other).p_bust);
+  const pickBoom = Number(shape(pick).p_boom);
+  const otherBoom = Number(shape(other).p_boom);
+  const close = Math.abs(call.gap) < CLEAR_POINTS;
+
+  if (close && Number.isFinite(pickBust) && Number.isFinite(otherBust)
+      && otherBust - pickBust >= 0.08) {
+    return 'Their projections are close, but ' + name + ' goes missing less often - he busts '
+      + Math.round(100 * pickBust) + '% of the time against ' + Math.round(100 * otherBust)
+      + '% for ' + them + '.';
+  }
+  if (close && Number.isFinite(pickBoom) && Number.isFinite(otherBoom)
+      && pickBoom - otherBoom >= 0.08) {
+    return 'Not much between them on the projection, so this comes down to upside: ' + name
+      + ' hits a big week ' + Math.round(100 * pickBoom) + '% of the time against '
+      + Math.round(100 * otherBoom) + '%.';
+  }
+  if (pick.basis === 'market' && other.basis === 'market') {
+    return 'Both are priced by the books this week, and ' + name + "'s line is the better one.";
+  }
+  if (close) {
+    return 'This one is genuinely close - ' + name + ' is ahead, but not by enough that the other '
+      + 'way would be a mistake.';
+  }
+  return name + ' is simply projected for more, and nothing about the matchup argues with it.';
+}
+
 /* Who to start instead of whom, against what the league has now. Slot shuffles among the same
  * starters are not changes; only someone entering or leaving the lineup is. */
 function lineupChanges(result, current) {
@@ -588,7 +648,9 @@ function lineupChanges(result, current) {
     if (outPlayer && outPlayer.injuryLevel === 'out') {
       call = { grade: 'clear', because: outPlayer.name + ' is ' + outPlayer.injury };
     }
-    changes.push({ slot: row.slot, in: inPlayer, out: outPlayer, call: call });
+    // `index` is the position in the starters array, which is what a "I made this switch"
+    // button needs to write back. Without it the button would have to guess which slot moved.
+    changes.push({ slot: row.slot, index: row.index, in: inPlayer, out: outPlayer, call: call });
   }
   for (const id of outs) {
     changes.push({ slot: null, in: null, out: people[id], call: { grade: 'clear', because: 'bench - nobody better, slot stays empty' } });
@@ -1072,6 +1134,10 @@ const store = {
 };
 
 const state = {
+  // The roster move being entered, if any: {id, kind, add: [], out: [], drop: []}. Held here
+  // rather than read back off the form so a re-render cannot lose half-entered picks.
+  tx: null,
+  waiverAsked: null,
   data: null, index: null, sample: false, leagues: [], view: 'week', openLeague: null,
   now: Date.now(), flash: null, pendingSleeper: null, storageOk: true, persisted: null, themePrompt: false, shot: null,
   compare: { a: null, b: null, scoring: 'half', interception: '-1' },
@@ -1088,6 +1154,10 @@ function fmt(n) {
 }
 
 function $(selector) { return document.querySelector(selector); }
+
+function loadWaiverState() {
+  state.waiverAsked = loadWaiverAsked();
+}
 
 function loadLeagues() {
   try {
@@ -1553,6 +1623,7 @@ async function loadProjections() {
 async function boot() {
   state.now = nowFromUrl();
   state.leagues = loadLeagues();
+  loadWaiverState();
   bindEvents();
   try {
     const loaded = await loadProjections();
@@ -1739,6 +1810,11 @@ function leagueScoringLabel(league) {
 
 /* ---- My week ---- */
 
+function waiverPromptHtml() {
+  const due = waiverPromptDue(new Date(), state.waiverAsked, state.leagues);
+  return due ? waiverBannerHtml(state.leagues.filter((l) => l.platform === 'espn')) : '';
+}
+
 function viewWeek() {
   if (!state.leagues.length) {
     return '<section class="panel empty-state"><h2>No leagues yet</h2>'
@@ -1747,7 +1823,7 @@ function viewWeek() {
       + '<p class="muted">Just want to settle one call? <button class="linkish" data-view="compare">Compare two players</button>.</p></section>';
   }
   const week = summariseWeek(state.leagues, state.index, state.now);
-  let html = '<div class="section-head"><h2>My week</h2>';
+  let html = waiverPromptHtml() + '<div class="section-head"><h2>My week</h2>';
   if (state.leagues.some((l) => l.platform === 'sleeper')) {
     html += '<button class="btn" data-action="refresh-sleeper">Refresh Sleeper leagues</button>';
   }
@@ -1803,7 +1879,7 @@ function viewWeek() {
       html += '<p class="small ok-line">No changes. The lineup you have is the one this page would set.</p>';
     } else {
       html += '<ul class="changes">';
-      for (const change of lineup.changes) html += changeItem(change);
+      for (const change of lineup.changes) html += changeItem(change, league.id);
       html += '</ul>';
     }
     if (lineup.missing.length) {
@@ -1815,7 +1891,7 @@ function viewWeek() {
   return html;
 }
 
-function changeItem(change) {
+function changeItem(change, leagueId) {
   const call = change.call || {};
   let text;
   if (change.in && change.out) {
@@ -1825,9 +1901,207 @@ function changeItem(change) {
   } else {
     text = 'Bench <strong>' + esc(change.out.name) + '</strong>';
   }
+  const reason = change.in && change.out ? reasonFor(change.in, change.out, call) : '';
+  // The button only appears where the switch can actually be written back: a known current lineup
+  // (so `index` exists) and somebody arriving. Michael, 19 September 2026: "small buttons by each
+  // suggested decision in ESPN that indicates the user made the switch in the league, and will
+  // trigger our site to make the switch as well."
+  const canApply = leagueId && change.in && typeof change.index === 'number';
   return '<li>' + gradePill(call.grade) + '<span>' + text + meterHtml(call.p) + (call.because ? '<span class="psub">' + esc(call.because) + '</span>' : '')
+    + (reason ? '<span class="psub why">' + esc(reason) + '</span>' : '')
     + (call.sameTeam ? '<span class="psub note">Same team: this treats them as independent, and they are not.</span>' : '')
+    + (canApply ? ' <button class="btn btn-small btn-quiet" data-action="made-switch" data-id="' + esc(leagueId)
+       + '" data-index="' + change.index + '" data-player="' + esc(change.in.id) + '">I made this switch</button>' : '')
     + '</span></li>';
+}
+
+
+/* ---- Roster moves: waivers, trades, and the switch you already made ---- */
+
+/* The page holds ESPN rosters by hand - ESPN's terms forbid reading them automatically - so a
+ * roster is only as right as the last time somebody told it something. Between Wednesday's waivers
+ * and a Sunday trade that is a lot of chances to drift, and a lineup call for a player you no
+ * longer own is worse than no call at all.
+ *
+ * Everything here is deliberately small: work out the roster after the move, hand it to
+ * updateLeague, and let the lineup rebuild itself. No transaction log, because the roster IS the
+ * record and a log nobody reads is a second thing to keep true. */
+
+const TX_KINDS = { waiver: 'Waiver claim', trade: 'Trade' };
+
+/* A player nobody has a projection for is still a player you own. Michael chose this on
+ * 19 September 2026 over blocking the add: about two hundred of four hundred and fifty rostered
+ * players are unpriced in a given week, so refusing them would refuse real transactions, and
+ * inventing a number for them would put a figure on the page the model never produced. He lands on
+ * the bench marked "no projection" and is never recommended. */
+function applyTransaction(league, tx) {
+  const leaving = (tx.out || []).concat(tx.drop || []).map(String);
+  const arriving = (tx.add || []).map(String);
+  const roster = (league.roster || []).map(String).filter((id) => leaving.indexOf(id) === -1);
+  for (const id of arriving) if (roster.indexOf(id) === -1) roster.push(id);
+  // The lineup is recomputed from scratch: the slots a departing player held are not his to keep.
+  return { roster: roster, starters: null };
+}
+
+/* What is still wrong with this move, in the words somebody would use, or null when it is ready.
+ *
+ * The uneven-trade rule is the one Michael asked for by name: "if someone trades away 1 player for
+ * 2, they need to select a player to drop". A roster has a size, and two arriving against one
+ * leaving is a roster one too big. */
+function transactionProblem(league, tx) {
+  const add = (tx.add || []).length;
+  const out = (tx.out || []).length;
+  const drop = (tx.drop || []).length;
+  if (!add && !out) return 'Pick at least one player.';
+  if (tx.kind === 'waiver') {
+    if (!add) return 'Who did you add?';
+    if (drop !== add) {
+      return add === 1 ? 'Pick the player you dropped for him.'
+        : 'Pick ' + add + ' players to drop, one for each you added.';
+    }
+    return null;
+  }
+  if (!add) return 'Who did you get in the trade?';
+  if (!out) return 'Who did you send?';
+  const owed = add - out;
+  if (owed > 0 && drop !== owed) {
+    return 'You brought in ' + add + ' for ' + out + ', so pick ' + owed + ' more '
+      + (owed === 1 ? 'player' : 'players') + ' to drop.';
+  }
+  if (owed <= 0 && drop) return 'No extra drops needed here.';
+  return null;
+}
+
+/* The starters array after a switch the owner has already made in ESPN.
+ *
+ * `index` is the slot the arriving player is taking. If he was already starting somewhere else this
+ * is a straight swap between two slots rather than a bench call, and the player he replaces goes
+ * where he came from - otherwise the lineup would quietly hold him twice. */
+function applySwitch(league, index, playerId) {
+  if (!Array.isArray(league.starters)) return null;
+  const next = league.starters.map((id) => (id ? String(id) : null));
+  if (index < 0 || index >= next.length) return null;
+  const elsewhere = next.indexOf(String(playerId));
+  if (elsewhere !== -1 && elsewhere !== index) next[elsewhere] = next[index];
+  next[index] = String(playerId);
+  return next;
+}
+
+/* ---- The Wednesday waiver prompt ---- */
+
+const WAIVER_PROMPT_KEY = 'startsit.waiversAsked.v1';
+const WAIVER_PROMPT_DAY = 3;        // Wednesday, as getDay() counts it
+const WAIVER_PROMPT_HOUR = 7;
+
+/* Which waiver run this is, named by the date of the Wednesday it belongs to.
+ *
+ * A date rather than a week number because week numbering disagrees with itself across countries
+ * and this only has to be stable on one device. Before Wednesday 7am the answer is the PREVIOUS
+ * Wednesday, so a Tuesday visit is not treated as a new run. */
+function waiverRunKey(now) {
+  const when = new Date(now.getTime());
+  if (when.getDay() === WAIVER_PROMPT_DAY && when.getHours() < WAIVER_PROMPT_HOUR) {
+    when.setDate(when.getDate() - 1);
+  }
+  while (when.getDay() !== WAIVER_PROMPT_DAY) when.setDate(when.getDate() - 1);
+  const month = String(when.getMonth() + 1).padStart(2, '0');
+  const day = String(when.getDate()).padStart(2, '0');
+  return when.getFullYear() + '-' + month + '-' + day;
+}
+
+/* Ask once per waiver run, and only when there is something to ask about.
+ *
+ * Michael chose dismissible-and-quiet on 19 September 2026: skip it and it stays gone until next
+ * Wednesday, because a prompt that reappears every visit gets clicked away without being read, and
+ * the Waiver button is always there for a claim made later in the week. */
+function waiverPromptDue(now, asked, leagues) {
+  const espn = (leagues || []).filter((l) => l.platform === 'espn');
+  if (!espn.length) return null;
+  const when = new Date(now.getTime());
+  const past = when.getDay() > WAIVER_PROMPT_DAY
+    || (when.getDay() === WAIVER_PROMPT_DAY && when.getHours() >= WAIVER_PROMPT_HOUR);
+  if (!past) return null;
+  const key = waiverRunKey(now);
+  return asked === key ? null : key;
+}
+
+function loadWaiverAsked() {
+  return store.get(WAIVER_PROMPT_KEY) || null;
+}
+
+function saveWaiverAsked(key) {
+  store.set(WAIVER_PROMPT_KEY, key);
+}
+
+function waiverBannerHtml(leagues) {
+  const espn = leagues.filter((l) => l.platform === 'espn');
+  return '<div class="notice notice-ask" id="waiver-ask">'
+    + '<strong>Waivers ran this morning.</strong> Did you pick anyone up? Telling the page keeps '
+    + 'its lineup calls about the team you actually own.'
+    + '<ul class="plain waiver-ask-list">'
+    + espn.map((l) => '<li><span>' + esc(l.name) + '</span>'
+        + '<button class="btn btn-small" data-action="tx-open" data-kind="waiver" data-id="' + esc(l.id)
+        + '">Yes, I added someone</button></li>').join('')
+    + '</ul>'
+    + '<button class="btn btn-small btn-quiet" data-action="waiver-dismiss">No changes this week</button>'
+    + '</div>';
+}
+
+/* ---- The forms ---- */
+
+function txChip(id, action, extra) {
+  const entry = state.index.byId[id];
+  const label = entry ? entry.name + ' (' + entry.pos + ' ' + entry.team + ')' : id;
+  return '<button type="button" class="chip" data-action="' + action + '" data-player="' + esc(id) + '"'
+    + (extra || '') + '>' + esc(label) + ' <span aria-hidden="true">&times;</span></button>';
+}
+
+function txRosterPicker(league, chosen, action, label) {
+  const rows = (league.roster || []).map((id) => {
+    const entry = state.index.byId[id];
+    const name = entry ? entry.name + ' - ' + entry.pos + ' ' + entry.team
+      : ((league.names && league.names[id]) || id);
+    const on = chosen.indexOf(String(id)) !== -1;
+    return '<li><button type="button" class="pick' + (on ? ' picked' : '') + '" data-action="' + action
+      + '" data-player="' + esc(id) + '">' + (on ? '&check; ' : '') + esc(name) + '</button></li>';
+  }).join('');
+  return '<div class="stack"><label>' + esc(label) + '</label><ul class="picker-results tx-roster">'
+    + (rows || '<li class="muted">No players on this roster yet.</li>') + '</ul></div>';
+}
+
+function txFormHtml(league) {
+  const tx = state.tx;
+  const problem = transactionProblem(league, tx);
+  const owed = tx.kind === 'trade' ? Math.max(0, tx.add.length - tx.out.length) : tx.add.length;
+  let html = '<section class="panel tx-panel"><div class="card-head"><h3>' + esc(TX_KINDS[tx.kind])
+    + '</h3><button class="btn btn-small btn-quiet" data-action="tx-cancel">Cancel</button></div>';
+
+  if (tx.kind === 'trade') {
+    html += txRosterPicker(league, tx.out, 'tx-out', 'Players you traded away');
+  }
+
+  html += '<div class="stack"><label for="tx-add">'
+    + (tx.kind === 'trade' ? 'Players you got back' : 'Player you added') + '</label>'
+    + '<input id="tx-add" data-input="tx-add" autocomplete="off" placeholder="Start typing a name" '
+    + 'aria-controls="tx-add-results">'
+    + '<ul id="tx-add-results" class="picker-results" aria-live="polite"></ul>';
+  if (tx.add.length) {
+    html += '<div class="chips">' + tx.add.map((id) => txChip(id, 'tx-unadd')).join('') + '</div>';
+  }
+  html += '</div>';
+
+  if (owed > 0) {
+    html += txRosterPicker(league, tx.drop, 'tx-drop',
+      tx.kind === 'trade'
+        ? 'Also drop ' + owed + ' to make room'
+        : (owed === 1 ? 'Who did you drop for him?' : 'Who did you drop? Pick ' + owed + '.'));
+  }
+
+  html += '<p class="small ' + (problem ? 'muted' : 'ok-line') + '">'
+    + esc(problem || 'Ready. This updates the roster and rebuilds the lineup.') + '</p>'
+    + '<div><button class="btn" data-action="tx-apply"' + (problem ? ' disabled' : '') + '>'
+    + esc(TX_KINDS[tx.kind]) + '</button></div></section>';
+  return html;
 }
 
 /* ---- Leagues ---- */
@@ -1956,8 +2230,14 @@ function viewLeague() {
 
   if (league.platform === 'espn') {
     if (!emptyEspn) html += shotPanelHtml(league);
-    html += '<section class="panel"><h3>Roster</h3>'
-      + '<p class="small muted">Or add players one at a time.</p>';
+    html += '<section class="panel"><div class="card-head"><h3>Roster</h3><div class="inline">'
+      + '<button class="btn btn-small" data-action="tx-open" data-kind="waiver" data-id="' + esc(league.id)
+      + '">Waiver claim</button> '
+      + '<button class="btn btn-small" data-action="tx-open" data-kind="trade" data-id="' + esc(league.id)
+      + '">Trade</button></div></div>'
+      + '<p class="small muted">A claim or a trade keeps the roster right without retyping it. '
+      + 'Or add players one at a time.</p>';
+    if (state.tx && state.tx.id === league.id) html += txFormHtml(league);
     if (league.unmatched && league.unmatched.length) {
       html += '<div class="notice notice-warn"><strong>These did not match anyone in this week\'s file:</strong><ul class="plain mono">'
         + league.unmatched.map((l) => '<li>' + esc(l) + '</li>').join('') + '</ul>Add them with the search below if they are players.</div>';
@@ -2161,6 +2441,65 @@ async function onClick(event) {
     render();
     return;
   }
+  if (action === 'made-switch') {
+    const league = findLeague(id);
+    const next = applySwitch(league, Number(target.getAttribute('data-index')),
+                             target.getAttribute('data-player'));
+    if (!next) { flash('warn', 'This league has no current lineup saved, so there is nothing to switch.'); render(); return; }
+    updateLeague(id, { starters: next });
+    const entry = state.index.byId[target.getAttribute('data-player')];
+    flash('ok', 'Lineup updated' + (entry ? ' - ' + entry.name + ' is starting.' : '.'));
+    render();
+    return;
+  }
+  if (action === 'tx-open') {
+    state.tx = { id: id, kind: target.getAttribute('data-kind') || 'waiver', add: [], out: [], drop: [] };
+    state.openLeague = id;
+    setView('leagues');
+    return;
+  }
+  if (action === 'tx-cancel') { state.tx = null; render(); return; }
+  if (action === 'waiver-dismiss') {
+    state.waiverAsked = waiverRunKey(new Date());
+    saveWaiverAsked(state.waiverAsked);
+    render();
+    return;
+  }
+  if (action === 'tx-add' || action === 'tx-unadd' || action === 'tx-out' || action === 'tx-drop') {
+    if (!state.tx) return;
+    const player = String(target.getAttribute('data-player'));
+    const list = action === 'tx-out' ? 'out' : (action === 'tx-drop' ? 'drop' : 'add');
+    const current = state.tx[list] || [];
+    if (action === 'tx-unadd') {
+      state.tx[list] = current.filter((p) => p !== player);
+    } else if (current.indexOf(player) === -1) {
+      state.tx[list] = current.concat([player]);
+    } else {
+      state.tx[list] = current.filter((p) => p !== player);   // a second click undoes the pick
+    }
+    // Dropping somebody you just sent away, or sending somebody you are dropping, is one player
+    // leaving twice. Keep the lists disjoint rather than letting applyTransaction paper over it.
+    if (list === 'out') state.tx.drop = (state.tx.drop || []).filter((x) => state.tx.out.indexOf(x) === -1);
+    if (list === 'drop') state.tx.out = (state.tx.out || []).filter((x) => state.tx.drop.indexOf(x) === -1);
+    render();
+    return;
+  }
+  if (action === 'tx-apply') {
+    const league = findLeague(state.tx && state.tx.id);
+    if (!league || transactionProblem(league, state.tx)) return;
+    const tx = state.tx;
+    updateLeague(league.id, applyTransaction(league, tx));
+    const named = (ids) => ids.map((pid) => (state.index.byId[pid] || {}).name || pid).join(', ');
+    const gone = (tx.out || []).concat(tx.drop || []);
+    state.tx = null;
+    // Answering the prompt IS the answer, whichever league it was for: somebody who has just told
+    // the page about a claim does not need asking again this run.
+    state.waiverAsked = waiverRunKey(new Date());
+    saveWaiverAsked(state.waiverAsked);
+    flash('ok', 'Added ' + named(tx.add) + (gone.length ? '; dropped ' + named(gone) : '') + '.');
+    render();
+    return;
+  }
   if (action === 'remove-player') {
     const league = findLeague(id);
     const player = target.getAttribute('data-player');
@@ -2359,11 +2698,12 @@ function rosterFromPaste(parsed, slots) {
 function onInput(event) {
   const input = event.target;
   const kind = input.getAttribute && input.getAttribute('data-input');
-  if (kind !== 'picker' && kind !== 'compare') return;
+  if (kind !== 'picker' && kind !== 'compare' && kind !== 'tx-add') return;
   const results = document.getElementById(input.getAttribute('aria-controls'));
   const found = searchPlayers(input.value, state.index, 8);
+  const pickAction = kind === 'picker' ? 'pick-player' : (kind === 'compare' ? 'pick-compare' : 'tx-add');
   results.innerHTML = found.map((e) => '<li><button type="button" class="pick" data-action="'
-    + (kind === 'picker' ? 'pick-player' : 'pick-compare') + '" data-id="' + esc(input.getAttribute('data-id') || '')
+    + pickAction + '" data-id="' + esc(input.getAttribute('data-id') || '')
     + '" data-side="' + esc(input.getAttribute('data-side') || '') + '" data-player="' + esc(e.id) + '">'
     + esc(e.name) + ' <span class="muted">' + esc(e.pos) + ' ' + esc(e.team) + '</span></button></li>').join('');
 }
@@ -2419,6 +2759,7 @@ if (typeof module !== 'undefined' && module.exports) {
     compareCall, describeCall, compareScoring, resolveTheme, needsThemePrompt, meterFill, THEMES, mergeLeagueSets, sameLeagueSets, SUPABASE_URL, SUPABASE_KEY, staleness, sleeperDue, rosterAgeDays, backupDue,
     STALE_HOURS, SLEEPER_REFRESH_HOURS, ESPN_ROSTER_WARN_DAYS, BACKUP_WARN_DAYS,
     validateProjections, buildIndex, injuryLevel, isStartingSlot, eligibleFor, hungarian, benchGap, benchTableHtml,
+    applyTransaction, transactionProblem, applySwitch, waiverRunKey, waiverPromptDue, reasonFor,
     buildLineup, lineupChanges, espnSlots, espnCounts, normaliseName, parseEspnPaste, pasteKeys, PASTE_SLOT, searchPlayers,
     canonicalTeam, SleeperError, sleeperUser, sleeperLeague, importSleeperUser, sleeperTeams,
     sleeperToSaved, validateLeaguesFile, mergeLeagues, summariseWeek, rosterFromPaste, esc,
