@@ -732,7 +732,7 @@ function pasteKeys(index) {
  * copy runs name, injury letter and team together as "Josh AllenQBuf QB" - by matching on the
  * compact letter stream, with a match required to start at a word and end either at a non-letter
  * or where a capital letter glues on the next cell.
- * Returns {matched: [{id, entry, line, slot}], unmatched: [line]}. */
+ * Returns {matched: [{id, entry, line, slot}], unmatched: [{line, slot}]}. */
 function parseEspnPaste(text, index) {
   const keys = pasteKeys(index);
   const matched = [];
@@ -758,7 +758,9 @@ function parseEspnPaste(text, index) {
         matched.push({ id: hit.entry.id, entry: hit.entry, line: line, slot: leading || pendingSlot });
       }
     } else if (looksLikeName(line)) {
-      unmatched.push(line);
+      // The slot comes too: a line the file cannot price is usually somebody on IR, and knowing
+      // which row he sat in is the difference between "on the roster, hurt" and "on the bench".
+      unmatched.push({ line: line, slot: pendingSlot });
     }
     pendingSlot = null;
   }
@@ -1320,7 +1322,8 @@ function shotPanelHtml(league) {
     + esc(SLOT_LABEL[m.slot] || m.slot || '?') + '</span> ' + esc(m.entry.name) + ' <span class="muted">' + esc(m.entry.pos) + ' ' + esc(m.entry.team) + '</span>'
     + (m.fuzzy ? ' <span class="psub">read as "' + esc(m.read) + '"</span>' : '') + '</span></li>').join('') + '</ul>';
   if (read.unmatched.length) {
-    html += '<p class="small muted">Not matched: ' + read.unmatched.map((l) => '<span class="mono">' + esc(l) + '</span>').join('; ') + '</p>';
+    html += '<p class="small muted">No projection this week, kept on the roster: '
+      + read.unmatched.map((l) => '<span class="mono">' + esc(unmatchedText(l)) + '</span>').join('; ') + '</p>';
   }
   html += '<div class="theme-choices">'
     + '<button type="button" class="btn btn-primary" data-action="shot-save" data-id="' + esc(league.id) + '"' + (read.matched.length ? '' : ' disabled') + '>Use this roster</button>'
@@ -2288,8 +2291,13 @@ function viewLeague() {
       + 'Or add players one at a time.</p>';
     if (state.tx && state.tx.id === league.id) html += txFormHtml(league);
     if (league.unmatched && league.unmatched.length) {
-      html += '<div class="notice notice-warn"><strong>These did not match anyone in this week\'s file:</strong><ul class="plain mono">'
-        + league.unmatched.map((l) => '<li>' + esc(l) + '</li>').join('') + '</ul>Add them with the search below if they are players.</div>';
+      // Kept on the roster, not lost - usually somebody on IR, who is absent from the week's file
+      // because the file is built from active rosters. Saying "did not match" made a correct
+      // import look broken.
+      html += '<div class="notice"><strong>On your roster, but nobody projects them this week:</strong>'
+        + '<ul class="plain mono">' + league.unmatched.map((l) => '<li>' + esc(unmatchedText(l)) + '</li>').join('')
+        + '</ul>Usually injured reserve. They stay on the roster and are never recommended to start; '
+        + 'the week they are activated the projection picks them up on its own.</div>';
     }
     html += '<div class="stack"><label for="picker">Add a player</label><input id="picker" data-input="picker" data-id="' + esc(league.id)
       + '" autocomplete="off" placeholder="Start typing a name" aria-controls="picker-results">'
@@ -2803,7 +2811,9 @@ async function onSubmit(event) {
       rosterFromPaste(parsed, league.slots)));
     flash(parsed.matched.length ? 'ok' : 'bad', parsed.matched.length
       ? 'Matched ' + parsed.matched.length + ' player' + (parsed.matched.length === 1 ? '' : 's') + '.'
-        + (parsed.unmatched.length ? ' ' + parsed.unmatched.length + ' line' + (parsed.unmatched.length === 1 ? '' : 's') + ' did not match - listed below.' : '')
+        + (parsed.unmatched.length ? ' ' + parsed.unmatched.length + ' more '
+           + (parsed.unmatched.length === 1 ? 'is on the roster with no projection' : 'are on the roster with no projection')
+           + ' - usually injured reserve.' : '')
       : 'Nothing in that paste matched this week\'s players. Copy the roster table itself, names included.');
     render();
     return;
@@ -2823,10 +2833,69 @@ async function onSubmit(event) {
   }
 }
 
+/* A line we cannot price is still a player you own.
+ *
+ * Michael, 19 September 2026: "why when I upload my roster does it not match players in IR?"
+ *
+ * Because the week's file is built from nflverse weekly rosters filtered to ACTIVE players - see
+ * features/upcoming.py - and a man on injured reserve is not active. He has no row, so there is
+ * nothing for his name to match, and he was being dropped from the roster altogether under a
+ * warning that read like the import had failed. It had not: the import was right and the roster
+ * was wrong.
+ *
+ * He goes on under a name-based id instead. Nothing projects him, no lineup starts him, and the
+ * week he is activated the real id matches and quietly takes over. The same answer Michael chose
+ * for a waiver pickup nobody prices: roster him, no projection.
+ */
+const PLACEHOLDER_PREFIX = 'unlisted:';
+
+/* An unmatched entry as text. The paste parser hands over {line, slot}; screenshot-import.js still
+ * hands over plain strings, and both have to render. */
+function unmatchedText(item) {
+  return typeof item === 'string' ? item : ((item && item.line) || '');
+}
+
+/* The name out of a roster line, for somebody the file does not carry.
+ *
+ * Deliberately crude - it only has to be recognisable on a bench list, because nothing computes
+ * with it. A leading slot label goes, then a status tag, then anything from the first digit on,
+ * which is where ESPN's columns start (opponent, projection, percentage owned). */
+function placeholderName(line) {
+  let text = String(line || '').replace(/\s+/g, ' ').trim();
+  const firstToken = text.split(' ')[0];
+  if (PASTE_SLOT[firstToken.toUpperCase()]) text = text.slice(firstToken.length).trim();
+  text = text.replace(/^(IR|O|Q|D|SUS|PUP|NFI)\b[\s.,-]*/i, '');
+  // ESPN's columns start at the opponent or the projection, so the name ends at the first digit
+  // or the first "@", whichever arrives first.
+  const at = text.indexOf('@');
+  const digit = text.search(/\d/);
+  const stops = [at, digit].filter((i) => i > 2);
+  if (stops.length) text = text.slice(0, Math.min.apply(null, stops));
+  return text.replace(/[\s,.-]+$/, '').slice(0, 40).trim();
+}
+
+function placeholderId(name) {
+  return PLACEHOLDER_PREFIX + normaliseName(name).replace(/\s+/g, '-');
+}
+
 /* A paste becomes a roster, and - when the slot column came along - the current lineup too. */
 function rosterFromPaste(parsed, slots) {
   const roster = parsed.matched.map((m) => m.id);
   const reserve = parsed.matched.filter((m) => m.slot === 'IR').map((m) => m.id);
+  // Everyone the file could not price, kept rather than dropped. `names` is what the roster list
+  // and the bench show for an id nothing else knows about.
+  const names = {};
+  for (const item of parsed.unmatched || []) {
+    const line = typeof item === 'string' ? item : (item && item.line);
+    const slot = typeof item === 'string' ? null : (item && item.slot);
+    const name = placeholderName(line);
+    if (!name) continue;
+    const id = placeholderId(name);
+    if (roster.indexOf(id) !== -1) continue;
+    roster.push(id);
+    names[id] = name;
+    if (slot === 'IR') reserve.push(id);
+  }
   const withSlots = parsed.matched.filter((m) => m.slot);
   let starters = null;
   if (withSlots.length && withSlots.length === parsed.matched.length) {
@@ -2838,7 +2907,7 @@ function rosterFromPaste(parsed, slots) {
       return pool.splice(at, 1)[0].id;
     });
   }
-  return { roster: roster, starters: starters, reserve: reserve };
+  return { roster: roster, starters: starters, reserve: reserve, names: names };
 }
 
 function onInput(event) {
@@ -2906,7 +2975,7 @@ if (typeof module !== 'undefined' && module.exports) {
     STALE_HOURS, SLEEPER_REFRESH_HOURS, ESPN_ROSTER_WARN_DAYS, BACKUP_WARN_DAYS,
     validateProjections, buildIndex, injuryLevel, isStartingSlot, eligibleFor, hungarian, benchGap, benchTableHtml,
     applyTransaction, transactionProblem, applySwitch, waiverRunKey, waiverPromptDue, reasonFor, pageKey,
-    imageFilesFrom, leagueForShot,
+    imageFilesFrom, leagueForShot, placeholderName, placeholderId, PLACEHOLDER_PREFIX, rosterFromPaste,
     buildLineup, lineupChanges, espnSlots, espnCounts, normaliseName, parseEspnPaste, pasteKeys, PASTE_SLOT, searchPlayers,
     canonicalTeam, SleeperError, sleeperUser, sleeperLeague, importSleeperUser, sleeperTeams,
     sleeperToSaved, validateLeaguesFile, mergeLeagues, summariseWeek, rosterFromPaste, esc,
