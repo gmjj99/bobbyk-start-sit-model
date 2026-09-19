@@ -1688,6 +1688,48 @@ function setView(view) {
   if (main) main.focus({ preventScroll: true });
 }
 
+/* ---- Back to the top when the page underneath you changes ----
+ *
+ * Michael, 19 September 2026: "you scroll to the bottom and set the settings then create the team,
+ * but when the page changes, you're still scrolled down." A page that rewrites itself in place
+ * never moves the window, so every navigation leaves you wherever the last one ended - halfway down
+ * a form that no longer exists, looking at the middle of something new.
+ *
+ * Keyed on WHAT YOU ARE LOOKING AT rather than on every redraw. Picking a player, ticking a box,
+ * toggling a slot: all of those rebuild the page too, and hauling somebody to the top in the middle
+ * of a form would be worse than the problem being fixed. The view and the open league are the two
+ * things that mean "this is a different page now".
+ */
+function pageKey(current) {
+  return String((current && current.view) || '') + '|' + String((current && current.openLeague) || '');
+}
+
+function scrollToTop() {
+  if (typeof window === 'undefined' || typeof window.scrollTo !== 'function') return false;
+  let smooth = true;
+  try {
+    smooth = !(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+  } catch (err) { smooth = true; }
+  try {
+    window.scrollTo({ top: 0, left: 0, behavior: smooth ? 'smooth' : 'auto' });
+  } catch (err) {
+    window.scrollTo(0, 0);      // older browsers take two numbers and refuse the options object
+  }
+  return true;
+}
+
+let lastPageKey = null;
+
+function scrollOnPageChange() {
+  const key = pageKey(state);
+  // The first paint has nothing to scroll away from, and scrolling on load would fight a browser
+  // restoring its own position on a refresh.
+  if (lastPageKey === null) { lastPageKey = key; return false; }
+  if (key === lastPageKey) return false;
+  lastPageKey = key;
+  return scrollToTop();
+}
+
 function render() {
   if (!state.index) return;
   // The account line lives in the header, outside main: without this it keeps whatever it last
@@ -1711,6 +1753,9 @@ function render() {
   document.querySelectorAll('[data-view]').forEach((btn) => {
     btn.setAttribute('aria-current', btn.getAttribute('data-view') === state.view ? 'page' : 'false');
   });
+  // After the new page exists, so the browser scrolls against its real height rather than the
+  // height of the page that was here a moment ago.
+  scrollOnPageChange();
 }
 
 function flash(kind, html) {
@@ -2418,7 +2463,7 @@ async function onClick(event) {
   state.flash = null;
 
   if (action === 'goto-leagues') { setView('leagues'); return; }
-  if (action === 'open-league') { state.openLeague = id; setView('leagues'); window.scrollTo(0, 0); return; }
+  if (action === 'open-league') { state.openLeague = id; setView('leagues'); return; }
   if (action === 'close-league') { state.openLeague = null; render(); return; }
   if (action === 'preset') {
     const league = findLeague(id);
@@ -2759,7 +2804,7 @@ if (typeof module !== 'undefined' && module.exports) {
     compareCall, describeCall, compareScoring, resolveTheme, needsThemePrompt, meterFill, THEMES, mergeLeagueSets, sameLeagueSets, SUPABASE_URL, SUPABASE_KEY, staleness, sleeperDue, rosterAgeDays, backupDue,
     STALE_HOURS, SLEEPER_REFRESH_HOURS, ESPN_ROSTER_WARN_DAYS, BACKUP_WARN_DAYS,
     validateProjections, buildIndex, injuryLevel, isStartingSlot, eligibleFor, hungarian, benchGap, benchTableHtml,
-    applyTransaction, transactionProblem, applySwitch, waiverRunKey, waiverPromptDue, reasonFor,
+    applyTransaction, transactionProblem, applySwitch, waiverRunKey, waiverPromptDue, reasonFor, pageKey,
     buildLineup, lineupChanges, espnSlots, espnCounts, normaliseName, parseEspnPaste, pasteKeys, PASTE_SLOT, searchPlayers,
     canonicalTeam, SleeperError, sleeperUser, sleeperLeague, importSleeperUser, sleeperTeams,
     sleeperToSaved, validateLeaguesFile, mergeLeagues, summariseWeek, rosterFromPaste, esc,
