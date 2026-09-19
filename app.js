@@ -2252,7 +2252,18 @@ function viewLeague() {
     + esc(league.platform === 'sleeper' ? 'Sleeper' : 'ESPN') + (league.team ? ' &middot; ' + esc(league.team) : '') + ' &middot; '
     + esc(leagueScoringLabel(league)) + '</p></div>';
   if (league.platform === 'sleeper') html += '<button class="btn" data-action="refresh-one" data-id="' + esc(league.id) + '">Refresh</button>';
+  // Michael, 19 September 2026: at the top, beside the team name and the platform. A claim or a
+  // trade is something you arrive at the page to do, and it was sitting below the roster where you
+  // had to go looking for it.
+  if (league.platform === 'espn') {
+    html += '<div class="inline league-moves">'
+      + '<button class="btn btn-small" data-action="tx-open" data-kind="waiver" data-id="' + esc(league.id)
+      + '">Waiver claim</button>'
+      + '<button class="btn btn-small" data-action="tx-open" data-kind="trade" data-id="' + esc(league.id)
+      + '">Trade</button></div>';
+  }
   html += '</div>';
+  if (state.tx && state.tx.id === league.id) html += txFormHtml(league);
 
   if (split.offence.length) {
     html += '<div class="notice notice-warn"><strong>Not projected in this league:</strong> <code>' + split.offence.map(esc).join('</code>, <code>')
@@ -2297,14 +2308,9 @@ function viewLeague() {
 
   if (league.platform === 'espn') {
     if (!emptyEspn) html += shotPanelHtml(league);
-    html += '<section class="panel"><div class="card-head"><h3>Roster</h3><div class="inline">'
-      + '<button class="btn btn-small" data-action="tx-open" data-kind="waiver" data-id="' + esc(league.id)
-      + '">Waiver claim</button> '
-      + '<button class="btn btn-small" data-action="tx-open" data-kind="trade" data-id="' + esc(league.id)
-      + '">Trade</button></div></div>'
-      + '<p class="small muted">A claim or a trade keeps the roster right without retyping it. '
-      + 'Or add players one at a time.</p>';
-    if (state.tx && state.tx.id === league.id) html += txFormHtml(league);
+    html += '<section class="panel"><h3>Roster</h3>'
+      + '<p class="small muted">A waiver claim or a trade, up at the top, keeps this right without '
+      + 'retyping it. Or add players one at a time.</p>';
     if (league.unmatched && league.unmatched.length) {
       // Kept on the roster, not lost - usually somebody on IR, who is absent from the week's file
       // because the file is built from active rosters. Saying "did not match" made a correct
