@@ -1287,8 +1287,12 @@ function shotPanelHtml(league) {
     html += '<p class="small">Take screenshots of your team in the ESPN app - the lineup, and the bench if you have to scroll - and choose them here. Up to '
       + (shots ? shots.MAX_IMAGES : 4) + ' at once. Importing again replaces the roster.</p>'
       + (shot && shot.stage === 'failed' ? '<div class="notice notice-bad">Could not read those screenshots: ' + esc(shot.error) + '</div>' : '')
+      + '<div class="shot-drop" data-drop="shots" data-id="' + esc(league.id) + '">'
       + '<label class="btn btn-primary file-btn">Choose screenshots'
-      + '<input type="file" accept="image/*" multiple data-input="shot-files" data-id="' + esc(league.id) + '"></label>';
+      + '<input type="file" accept="image/*" multiple data-input="shot-files" data-id="' + esc(league.id) + '"></label>'
+      + '<p class="small muted shot-drop-hint">Or drag them here &mdash; or snip with '
+      + '<kbd>Win</kbd>+<kbd>Shift</kbd>+<kbd>S</kbd> and press <kbd>Ctrl</kbd>+<kbd>V</kbd> '
+      + 'anywhere on this page.</p></div>';
     return html + '</section>';
   }
   if (shot.stage === 'reading' || shot.stage === 'ai') {
@@ -2441,11 +2445,108 @@ function viewHow() {
 
 /* ---- events ---- */
 
+/* ---- Dropping and pasting screenshots ----
+ *
+ * Michael, 19 September 2026: "add a feature when choosing ESPN screenshots, to where you can
+ * drag/paste a copied screenshot, so its easy using the screen snip tool on a PC."
+ *
+ * Win+Shift+S puts the snip on the clipboard and nowhere else - there is no file to choose, which
+ * is exactly the case the file button cannot serve. A paste is the shortest path from that
+ * keystroke to a roster, and a drag is the shortest path from a file manager.
+ */
+
+/* Image files out of a clipboard or a drop, in the shape startShotImport already takes.
+ *
+ * A clipboard carries the same picture several ways at once - a PNG, an HTML fragment quoting it,
+ * a bitmap - so `kind === 'file'` is the filter that matters: it takes the one that is really a
+ * file and ignores the copies that are only descriptions of it.
+ */
+function imageFilesFrom(transfer) {
+  if (!transfer) return [];
+  const files = [];
+  const items = transfer.items;
+  if (items && items.length) {
+    for (let i = 0; i < items.length; i += 1) {
+      const item = items[i];
+      if (item.kind === 'file' && /^image\//.test(item.type || '')) {
+        const file = item.getAsFile();
+        if (file) files.push(file);
+      }
+    }
+  }
+  if (!files.length && transfer.files && transfer.files.length) {
+    for (let i = 0; i < transfer.files.length; i += 1) {
+      const file = transfer.files[i];
+      if (/^image\//.test(file.type || '')) files.push(file);
+    }
+  }
+  return files;
+}
+
+/* Which league a pasted screenshot belongs to.
+ *
+ * The open ESPN league if one is open, because that is the page the panel is on. Otherwise the
+ * only ESPN league, if there is exactly one - with several and none open there is no way to tell
+ * which team the picture is of, and guessing would overwrite the wrong roster.
+ */
+function leagueForShot(current) {
+  const leagues = (current && current.leagues) || [];
+  const open = leagues.find((l) => l.id === (current && current.openLeague));
+  if (open && open.platform === 'espn') return open;
+  const espn = leagues.filter((l) => l.platform === 'espn');
+  return espn.length === 1 ? espn[0] : null;
+}
+
+function onPaste(event) {
+  const files = imageFilesFrom(event.clipboardData);
+  if (!files.length) return;
+  const league = leagueForShot(state);
+  if (!league) {
+    // Silent would be worse: somebody has just snipped their lineup and pressed paste, and nothing
+    // happening looks like the feature is broken rather than like it needs to know the league.
+    flash('warn', 'Open the ESPN league you want this screenshot to go to, then paste again.');
+    render();
+    return;
+  }
+  event.preventDefault();
+  startShotImport(league, files);
+}
+
+function onDragOver(event) {
+  if (!event.target.closest || !event.target.closest('[data-drop="shots"]')) return;
+  event.preventDefault();                       // without this the browser opens the image itself
+  if (event.dataTransfer) event.dataTransfer.dropEffect = 'copy';
+  const zone = event.target.closest('[data-drop="shots"]');
+  if (zone) zone.classList.add('dropping');
+}
+
+function onDragLeave(event) {
+  const zone = event.target.closest && event.target.closest('[data-drop="shots"]');
+  if (zone) zone.classList.remove('dropping');
+}
+
+function onDrop(event) {
+  const zone = event.target.closest && event.target.closest('[data-drop="shots"]');
+  if (!zone) return;
+  event.preventDefault();
+  zone.classList.remove('dropping');
+  const files = imageFilesFrom(event.dataTransfer);
+  if (!files.length) { flash('bad', 'That did not look like an image.'); render(); return; }
+  const league = findLeague(zone.getAttribute('data-id'));
+  if (league) startShotImport(league, files);
+}
+
 function bindEvents() {
   document.addEventListener('click', onClick);
   document.addEventListener('submit', onSubmit);
   document.addEventListener('input', onInput);
   document.addEventListener('change', onChange);
+  // On the document, not the panel: a paste goes wherever the focus happens to be, and after a
+  // snip the focus is usually nowhere in particular.
+  document.addEventListener('paste', onPaste);
+  document.addEventListener('dragover', onDragOver);
+  document.addEventListener('dragleave', onDragLeave);
+  document.addEventListener('drop', onDrop);
 }
 
 function updateLeague(id, changes) {
@@ -2805,6 +2906,7 @@ if (typeof module !== 'undefined' && module.exports) {
     STALE_HOURS, SLEEPER_REFRESH_HOURS, ESPN_ROSTER_WARN_DAYS, BACKUP_WARN_DAYS,
     validateProjections, buildIndex, injuryLevel, isStartingSlot, eligibleFor, hungarian, benchGap, benchTableHtml,
     applyTransaction, transactionProblem, applySwitch, waiverRunKey, waiverPromptDue, reasonFor, pageKey,
+    imageFilesFrom, leagueForShot,
     buildLineup, lineupChanges, espnSlots, espnCounts, normaliseName, parseEspnPaste, pasteKeys, PASTE_SLOT, searchPlayers,
     canonicalTeam, SleeperError, sleeperUser, sleeperLeague, importSleeperUser, sleeperTeams,
     sleeperToSaved, validateLeaguesFile, mergeLeagues, summariseWeek, rosterFromPaste, esc,

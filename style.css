@@ -856,3 +856,13 @@ dl.grades dd { margin: 0; font-size: var(--t-sm); }
 /* The one-line reason under a call. Michael, 19 September 2026: brief, conversational, and it
    explains WHY rather than repeating how big the gap is. */
 .psub.why { color: var(--ink-2); font-style: italic; }
+
+
+/* The screenshot drop zone. Win+Shift+S leaves the snip on the clipboard and nowhere else, so
+   paste and drag are the two paths a file button cannot serve. */
+.shot-drop { border: 1px dashed var(--line); border-radius: 10px; padding: 14px;
+  text-align: center; transition: border-color .15s ease, background .15s ease; }
+.shot-drop.dropping { border-color: var(--accent); background: var(--surface-2); }
+.shot-drop-hint { margin: 10px 0 0; }
+.shot-drop-hint kbd { font-family: var(--mono, monospace); font-size: .9em; border: 1px solid var(--line);
+  border-bottom-width: 2px; border-radius: 4px; padding: 1px 5px; background: var(--surface); }
