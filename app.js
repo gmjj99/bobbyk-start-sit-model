@@ -1009,6 +1009,11 @@ function mergeLeagues(existing, incoming) {
 }
 
 /* Every league's lineup, plus what cuts across them. */
+// Who a shared-start warning is actually about, best first. A skill player carries a week; a
+// kicker or a defence shared across four leagues is a coincidence, not a risk worth a headline.
+const SHARED_PRIORITY = ['QB', 'RB', 'WR', 'TE', 'K', 'DEF'];
+const SHARED_SHOWN = 5;
+
 function summariseWeek(leagues, index, now) {
   const perLeague = leagues.map((league) => ({ league: league, lineup: buildLineup(league, index, now) }));
   const counts = {};
@@ -1030,8 +1035,18 @@ function summariseWeek(leagues, index, now) {
       }
     }
   }
+  // Michael, 19 September 2026: "lets only call out the top 5 starting in one league, and
+  // prioritize WR/QB/TE/RB over D/ST/K. I have 7 leagues so my list is 13 players long and takes
+  // up the page."
+  //
+  // The point of this list is "one bad afternoon lands in four places at once", and a kicker
+  // shared across four leagues is not that warning - nobody changes anything because of it. So the
+  // skill positions sort first, then the number of leagues, then the projection, and only the top
+  // few survive. The rest are still on their own league cards.
   const shared = Object.keys(counts).map((id) => counts[id]).filter((c) => c.leagues.length >= 2)
-    .sort((a, b) => b.leagues.length - a.leagues.length || b.player.mu - a.player.mu);
+    .sort((a, b) => (SHARED_PRIORITY.indexOf(a.player.pos) - SHARED_PRIORITY.indexOf(b.player.pos))
+      || b.leagues.length - a.leagues.length || b.player.mu - a.player.mu)
+    .slice(0, SHARED_SHOWN);
   return { perLeague: perLeague, shared: shared, injured: injured };
 }
 
@@ -2432,8 +2447,12 @@ function viewHow() {
     + 'nowhere. <strong>Boom</strong> is ' + BOOM_AT_TEXT + ' points or more, <strong>bust</strong> is ' + BUST_AT_TEXT
     + ' or fewer, both in half PPR and rescaled to your league. Two players with the same projection can have very '
     + 'different weeks, and this is where that shows.</p>'
-    + '<p>It is read from history: the 10th and 90th percentile of what players at his position, with his projection, '
-    + 'actually scored. So it describes the shape of a week like his, not him specifically.</p>'
+    + '<p>Where it comes from depends on the player. When the books have priced him at several '
+    + 'different yardages, the spread of those prices is the market&rsquo;s own read of how wide his week '
+    + 'is, and that is what you see - which is why two receivers projected for the same points can '
+    + 'now show very different risk. When they have not priced him that way, it falls back to the '
+    + '10th and 90th percentile of what players at his position with his projection actually '
+    + 'scored, which describes a week like his rather than him.</p>'
     + '<h3>What it cannot see</h3><ul>'
     + '<li>Only these stats are projected: <span id="not-projected-list">' + esc((d.stats || []).join(', ')) + '</span>. First-down points, yardage bonuses, return yards and IDP are listed as "not projected" on each league.</li>'
     + '<li>D/ST and kickers are rough: one number each, on default scoring, not your league\'s.</li>'
