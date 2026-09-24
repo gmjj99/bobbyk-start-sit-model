@@ -1154,7 +1154,6 @@ const state = {
   // The roster move being entered, if any: {id, kind, add: [], out: [], drop: []}. Held here
   // rather than read back off the form so a re-render cannot lose half-entered picks.
   tx: null,
-  waiverAsked: null,
   data: null, index: null, sample: false, leagues: [], view: 'week', openLeague: null,
   now: Date.now(), flash: null, pendingSleeper: null, storageOk: true, persisted: null, themePrompt: false, shot: null,
   compare: { a: null, b: null, scoring: 'half', interception: '-1' },
@@ -1171,10 +1170,6 @@ function fmt(n) {
 }
 
 function $(selector) { return document.querySelector(selector); }
-
-function loadWaiverState() {
-  state.waiverAsked = loadWaiverAsked();
-}
 
 function loadLeagues() {
   try {
@@ -1645,7 +1640,6 @@ async function loadProjections() {
 async function boot() {
   state.now = nowFromUrl();
   state.leagues = loadLeagues();
-  loadWaiverState();
   bindEvents();
   try {
     const loaded = await loadProjections();
@@ -1877,11 +1871,6 @@ function leagueScoringLabel(league) {
 
 /* ---- My week ---- */
 
-function waiverPromptHtml() {
-  const due = waiverPromptDue(new Date(), state.waiverAsked, state.leagues);
-  return due ? waiverBannerHtml(state.leagues.filter((l) => l.platform === 'espn')) : '';
-}
-
 function viewWeek() {
   if (!state.leagues.length) {
     return '<section class="panel empty-state"><h2>No leagues yet</h2>'
@@ -1890,7 +1879,7 @@ function viewWeek() {
       + '<p class="muted">Just want to settle one call? <button class="linkish" data-view="compare">Compare two players</button>.</p></section>';
   }
   const week = summariseWeek(state.leagues, state.index, state.now);
-  let html = waiverPromptHtml() + '<div class="section-head"><h2>My week</h2>';
+  let html = '<div class="section-head"><h2>My week</h2>';
   if (state.leagues.some((l) => l.platform === 'sleeper')) {
     html += '<button class="btn" data-action="refresh-sleeper">Refresh Sleeper leagues</button>';
   }
@@ -2006,8 +1995,17 @@ function applyTransaction(league, tx) {
   const arriving = (tx.add || []).map(String);
   const roster = (league.roster || []).map(String).filter((id) => leaving.indexOf(id) === -1);
   for (const id of arriving) if (roster.indexOf(id) === -1) roster.push(id);
-  // The lineup is recomputed from scratch: the slots a departing player held are not his to keep.
-  return { roster: roster, starters: null };
+  // The lineup is KEPT, with anybody who left blanked out of the slot he held.
+  //
+  // It used to be thrown away - `starters: null` - on the reasoning that a departing player's slot
+  // was not his to keep. That is true of the slot and false of the lineup: nulling it meant that
+  // the moment Michael recorded a waiver claim, the league stopped knowing what he was starting and
+  // said "Current lineup unknown - paste the roster with its slot column to see changes". Recording
+  // a claim is the work that button exists to save, and it was demanding the retype it replaced.
+  const starters = Array.isArray(league.starters)
+    ? league.starters.map((id) => (id && leaving.indexOf(String(id)) !== -1 ? null : id))
+    : null;
+  return { roster: roster, starters: starters };
 }
 
 /* What is still wrong with this move, in the words somebody would use, or null when it is ready.
@@ -2054,65 +2052,14 @@ function applySwitch(league, index, playerId) {
   return next;
 }
 
-/* ---- The Wednesday waiver prompt ---- */
-
-const WAIVER_PROMPT_KEY = 'startsit.waiversAsked.v1';
-const WAIVER_PROMPT_DAY = 3;        // Wednesday, as getDay() counts it
-const WAIVER_PROMPT_HOUR = 7;
-
-/* Which waiver run this is, named by the date of the Wednesday it belongs to.
+/* The Wednesday prompt that used to live here is gone.
  *
- * A date rather than a week number because week numbering disagrees with itself across countries
- * and this only has to be stable on one device. Before Wednesday 7am the answer is the PREVIOUS
- * Wednesday, so a Tuesday visit is not treated as a new run. */
-function waiverRunKey(now) {
-  const when = new Date(now.getTime());
-  if (when.getDay() === WAIVER_PROMPT_DAY && when.getHours() < WAIVER_PROMPT_HOUR) {
-    when.setDate(when.getDate() - 1);
-  }
-  while (when.getDay() !== WAIVER_PROMPT_DAY) when.setDate(when.getDate() - 1);
-  const month = String(when.getMonth() + 1).padStart(2, '0');
-  const day = String(when.getDate()).padStart(2, '0');
-  return when.getFullYear() + '-' + month + '-' + day;
-}
-
-/* Ask once per waiver run, and only when there is something to ask about.
- *
- * Michael chose dismissible-and-quiet on 19 September 2026: skip it and it stays gone until next
- * Wednesday, because a prompt that reappears every visit gets clicked away without being read, and
- * the Waiver button is always there for a claim made later in the week. */
-function waiverPromptDue(now, asked, leagues) {
-  const espn = (leagues || []).filter((l) => l.platform === 'espn');
-  if (!espn.length) return null;
-  const when = new Date(now.getTime());
-  const past = when.getDay() > WAIVER_PROMPT_DAY
-    || (when.getDay() === WAIVER_PROMPT_DAY && when.getHours() >= WAIVER_PROMPT_HOUR);
-  if (!past) return null;
-  const key = waiverRunKey(now);
-  return asked === key ? null : key;
-}
-
-function loadWaiverAsked() {
-  return store.get(WAIVER_PROMPT_KEY) || null;
-}
-
-function saveWaiverAsked(key) {
-  store.set(WAIVER_PROMPT_KEY, key);
-}
-
-function waiverBannerHtml(leagues) {
-  const espn = leagues.filter((l) => l.platform === 'espn');
-  return '<div class="notice notice-ask" id="waiver-ask">'
-    + '<strong>Waivers ran this morning.</strong> Did you pick anyone up? Telling the page keeps '
-    + 'its lineup calls about the team you actually own.'
-    + '<ul class="plain waiver-ask-list">'
-    + espn.map((l) => '<li><span>' + esc(l.name) + '</span>'
-        + '<button class="btn btn-small" data-action="tx-open" data-kind="waiver" data-id="' + esc(l.id)
-        + '">Yes, I added someone</button></li>').join('')
-    + '</ul>'
-    + '<button class="btn btn-small btn-quiet" data-action="waiver-dismiss">No changes this week</button>'
-    + '</div>';
-}
+ * It asked, on the first visit after 7am Wednesday, whether anyone had been picked up in each ESPN
+ * league. Michael, 24 September 2026: "the prompt for the pickups is buggy, lets just keep it to a
+ * button on the team roster page." So the buttons in the league header are the whole feature now -
+ * they work on any day, which is what a claim made on a Saturday needed anyway, and there is no
+ * once-a-week state to get wrong.
+ */
 
 /* ---- The forms ---- */
 
@@ -2638,12 +2585,6 @@ async function onClick(event) {
     return;
   }
   if (action === 'tx-cancel') { state.tx = null; render(); return; }
-  if (action === 'waiver-dismiss') {
-    state.waiverAsked = waiverRunKey(new Date());
-    saveWaiverAsked(state.waiverAsked);
-    render();
-    return;
-  }
   if (action === 'tx-add' || action === 'tx-unadd' || action === 'tx-out' || action === 'tx-drop') {
     if (!state.tx) return;
     const player = String(target.getAttribute('data-player'));
@@ -2671,10 +2612,6 @@ async function onClick(event) {
     const named = (ids) => ids.map((pid) => (state.index.byId[pid] || {}).name || pid).join(', ');
     const gone = (tx.out || []).concat(tx.drop || []);
     state.tx = null;
-    // Answering the prompt IS the answer, whichever league it was for: somebody who has just told
-    // the page about a claim does not need asking again this run.
-    state.waiverAsked = waiverRunKey(new Date());
-    saveWaiverAsked(state.waiverAsked);
     flash('ok', 'Added ' + named(tx.add) + (gone.length ? '; dropped ' + named(gone) : '') + '.');
     render();
     return;
@@ -2682,14 +2619,19 @@ async function onClick(event) {
   if (action === 'remove-player') {
     const league = findLeague(id);
     const player = target.getAttribute('data-player');
-    updateLeague(id, { roster: league.roster.filter((p) => p !== player), starters: null });
+    // His slot empties; the rest of the lineup is still known. Same reasoning as applyTransaction.
+    const without = Array.isArray(league.starters)
+      ? league.starters.map((sid) => (String(sid) === String(player) ? null : sid))
+      : null;
+    updateLeague(id, { roster: league.roster.filter((p) => p !== player), starters: without });
     render();
     return;
   }
   if (action === 'pick-player') {
     const league = findLeague(id);
     const player = target.getAttribute('data-player');
-    if (league.roster.indexOf(player) === -1) updateLeague(id, { roster: league.roster.concat([player]), starters: null });
+    // Adding somebody puts him on the bench, which changes nothing about who is starting.
+    if (league.roster.indexOf(player) === -1) updateLeague(id, { roster: league.roster.concat([player]) });
     render();
     const input = $('#picker');
     if (input) input.focus();
@@ -2999,7 +2941,7 @@ if (typeof module !== 'undefined' && module.exports) {
     compareCall, describeCall, compareScoring, resolveTheme, needsThemePrompt, meterFill, THEMES, mergeLeagueSets, sameLeagueSets, SUPABASE_URL, SUPABASE_KEY, staleness, sleeperDue, rosterAgeDays, backupDue,
     STALE_HOURS, SLEEPER_REFRESH_HOURS, ESPN_ROSTER_WARN_DAYS, BACKUP_WARN_DAYS,
     validateProjections, buildIndex, injuryLevel, isStartingSlot, eligibleFor, hungarian, benchGap, benchTableHtml,
-    applyTransaction, transactionProblem, applySwitch, waiverRunKey, waiverPromptDue, reasonFor, pageKey,
+    applyTransaction, transactionProblem, applySwitch, reasonFor, pageKey,
     imageFilesFrom, leagueForShot, placeholderName, placeholderId, PLACEHOLDER_PREFIX, rosterFromPaste,
     buildLineup, lineupChanges, espnSlots, espnCounts, normaliseName, parseEspnPaste, pasteKeys, PASTE_SLOT, searchPlayers,
     canonicalTeam, SleeperError, sleeperUser, sleeperLeague, importSleeperUser, sleeperTeams,
