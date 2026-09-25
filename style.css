@@ -869,3 +869,11 @@ dl.grades dd { margin: 0; font-size: var(--t-sm); }
 
 /* The roster-move buttons, in the league header beside the name and platform. */
 .league-moves { display: flex; gap: 8px; flex-wrap: wrap; }
+
+/* Setting the current lineup: once, then the page keeps it. Replaces "paste the roster again". */
+.lineup-set-grid { display: grid; gap: 8px; }
+.lineup-set-row { display: grid; grid-template-columns: 5.5rem 1fr; align-items: center; gap: 10px; }
+.lineup-set-row .slot { font-size: var(--t-2xs); letter-spacing: .06em; text-transform: uppercase;
+  color: var(--ink-3); }
+.lineup-set-row select { width: 100%; padding: 6px 8px; font: inherit; }
+@media (max-width: 30rem) { .lineup-set-row { grid-template-columns: 1fr; gap: 2px; } }

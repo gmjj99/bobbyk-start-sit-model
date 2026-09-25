@@ -81,7 +81,13 @@ function marketTrouble(market, now) {
   }
   const seen = Date.parse(market.as_of);
   if (!Number.isFinite(seen)) return null;
-  const hours = (now.getTime() - seen) / 3600000;
+  // `state.now` is a NUMBER - Date.now() - and every other reader here does plain arithmetic on
+  // it. This asked it for .getTime(), which threw on the first paint, took renderHeader down with
+  // it and left the page blank until a nav click called render() on its own. The unit test passed
+  // because the test handed it a Date. Take either.
+  const at = now instanceof Date ? now.getTime() : Number(now);
+  if (!Number.isFinite(at)) return null;
+  const hours = (at - seen) / 3600000;
   if (hours < MARKET_STALE_HOURS) return null;
   return 'The betting market behind these numbers was last read '
     + (hours >= 48 ? Math.floor(hours / 24) + ' days' : Math.round(hours) + ' hours')
@@ -1969,8 +1975,11 @@ function viewWeek() {
       + esc(leagueScoringLabel(league)) + ' &middot; projected <span class="num">' + fmt(lineup.total) + '</span></p></div>'
       + '<button class="btn btn-small" data-action="open-league" data-id="' + esc(league.id) + '">Lineup</button></div>';
     if (lineup.changes === null) {
-      html += '<p class="small">Current lineup unknown - paste the roster with its slot column to see changes. '
-        + 'Recommended starters: ' + lineup.rows.filter((r) => r.player).map((r) => esc(r.player.name)).join(', ') + '.</p>';
+      html += '<p class="small">This page does not know who you are starting yet, so it cannot say '
+        + 'what to change. <button class="linkish" data-action="open-league" data-id="' + esc(league.id)
+        + '">Set your lineup</button> once and it stays current from then on.</p>'
+        + '<p class="small muted">It would start: '
+        + lineup.rows.filter((r) => r.player).map((r) => esc(r.player.name)).join(', ') + '.</p>';
     } else if (!lineup.changes.length) {
       html += '<p class="small ok-line">No changes. The lineup you have is the one this page would set.</p>';
     } else {
@@ -2158,6 +2167,86 @@ function txFormHtml(league) {
   return html;
 }
 
+/* ---- Telling the page what you are actually starting ----
+ *
+ * Michael, 25 September 2026: "its still telling me to repaste my roster, there needs to be a more
+ * automated way to do this. I cant repaste my roster on every pickup."
+ *
+ * He is right, and the old answer was indefensible. Without a current lineup the page can rank
+ * players but cannot say what to CHANGE, which is the thing it is for - and the only way to give it
+ * one was to paste the roster again, slot column included, after every transaction.
+ *
+ * The lineup is now something you set once and the page maintains: a picker per slot, a one-click
+ * "this is what I am starting" for the common case where it matches the recommendation, and after
+ * that the waiver, trade and "I made this switch" buttons keep it current without anybody retyping
+ * anything. A paste is still accepted; it is no longer the only road in.
+ */
+function startingSlotsOf(league) {
+  return (league.slots || []).filter(isStartingSlot);
+}
+
+/* The current lineup as an array aligned to the starting slots, padded and trimmed to fit.
+ *
+ * A league whose slots changed after its lineup was saved would otherwise carry an array of the
+ * wrong length, and every index after the change would name the wrong slot. */
+function startersOf(league) {
+  const slots = startingSlotsOf(league);
+  const saved = Array.isArray(league.starters) ? league.starters.slice(0, slots.length) : [];
+  while (saved.length < slots.length) saved.push(null);
+  return saved.map((id) => (id && id !== '0' ? String(id) : null));
+}
+
+function lineupIsKnown(league) {
+  return Array.isArray(league.starters) && league.starters.some(Boolean);
+}
+
+/* Who may be put in this slot: everybody on the roster the slot accepts, and nobody twice.
+ *
+ * A player already starting elsewhere still appears - picking him moves him, which is what a
+ * person means when they put the same name in a different slot - but the page will not offer to
+ * start him in two places at once without being told to. */
+function eligibleForSlot(league, slot, index, playerIndex) {
+  const byId = ((playerIndex || state.index) || {}).byId || {};
+  const current = startersOf(league);
+  const out = [];
+  for (const id of (league.roster || [])) {
+    const entry = byId[id];
+    const pos = entry ? entry.pos : null;
+    if (pos && !eligibleFor(slot, pos)) continue;
+    const at = current.indexOf(String(id));
+    out.push({ id: String(id),
+               name: entry ? entry.name + ' - ' + entry.pos + ' ' + entry.team
+                 : ((league.names && league.names[id]) || id),
+               elsewhere: at !== -1 && at !== index });
+  }
+  return out.sort((a, b) => a.name.localeCompare(b.name));
+}
+
+function lineupEditorHtml(league, lineup) {
+  const slots = startingSlotsOf(league);
+  const current = startersOf(league);
+  const known = lineupIsKnown(league);
+  let html = '<section class="panel lineup-set"><div class="card-head"><h3>'
+    + (known ? 'Your current lineup' : 'What are you starting?') + '</h3>'
+    + '<button class="btn btn-small" data-action="lineup-recommended" data-id="' + esc(league.id)
+    + '">Use the recommended lineup</button></div>';
+  if (!known) {
+    html += '<p class="small muted">The page knows your roster but not who is in it. Set this once '
+      + 'and it keeps itself up to date - claims, trades and the switches you make from here on.</p>';
+  }
+  html += '<div class="lineup-set-grid">';
+  slots.forEach((slot, index) => {
+    const chosen = current[index];
+    const options = eligibleForSlot(league, slot, index)
+      .map((o) => '<option value="' + esc(o.id) + '"' + (o.id === chosen ? ' selected' : '') + '>'
+        + esc(o.name) + (o.elsewhere ? ' (starting elsewhere)' : '') + '</option>').join('');
+    html += '<label class="lineup-set-row"><span class="slot">' + esc(SLOT_LABEL[slot] || slot) + '</span>'
+      + '<select data-input="set-starter" data-id="' + esc(league.id) + '" data-index="' + index + '">'
+      + '<option value="">&mdash; empty &mdash;</option>' + options + '</select></label>';
+  });
+  return html + '</div></section>';
+}
+
 /* ---- Leagues ---- */
 
 function viewLeagues() {
@@ -2251,6 +2340,8 @@ function viewLeague() {
   }
   html += '</div>';
   if (state.tx && state.tx.id === league.id) html += txFormHtml(league);
+
+  if ((league.roster || []).length) html += lineupEditorHtml(league, lineup);
 
   if (split.offence.length) {
     html += '<div class="notice notice-warn"><strong>Not projected in this league:</strong> <code>' + split.offence.map(esc).join('</code>, <code>')
@@ -2618,6 +2709,18 @@ async function onClick(event) {
     render();
     return;
   }
+  if (action === 'lineup-recommended') {
+    const league = findLeague(id);
+    const built = buildLineup(league, state.index, state.now);
+    const next = startingSlotsOf(league).map((slot, i) => {
+      const row = built.rows[i];
+      return row && row.player ? String(row.player.id) : null;
+    });
+    updateLeague(id, { starters: next });
+    flash('ok', 'Saved. From now on this page tells you what changed, not what to paste.');
+    render();
+    return;
+  }
   if (action === 'tx-open') {
     state.tx = { id: id, kind: target.getAttribute('data-kind') || 'waiver', add: [], out: [], drop: [] };
     state.openLeague = id;
@@ -2933,6 +3036,22 @@ function onInput(event) {
 function onChange(event) {
   const input = event.target;
   const kind = input.getAttribute && input.getAttribute('data-input');
+  if (kind === 'set-starter') {
+    const league = findLeague(input.getAttribute('data-id'));
+    const index = Number(input.getAttribute('data-index'));
+    const next = startersOf(league);
+    const chosen = input.value || null;
+    // Putting somebody in a slot he is not already in MOVES him: the slot he came from empties,
+    // rather than the page holding him in two places and counting him twice.
+    if (chosen) {
+      const at = next.indexOf(chosen);
+      if (at !== -1 && at !== index) next[at] = next[index];
+    }
+    next[index] = chosen;
+    updateLeague(league.id, { starters: next });
+    render();
+    return;
+  }
   if (kind === 'compare-scoring') { state.compare.scoring = input.value; render(); return; }
   if (kind === 'compare-interception') { state.compare.interception = input.value; render(); return; }
   if (kind === 'shot-files' && input.files && input.files.length) {
@@ -2982,6 +3101,7 @@ if (typeof module !== 'undefined' && module.exports) {
     STALE_HOURS, SLEEPER_REFRESH_HOURS, ESPN_ROSTER_WARN_DAYS, BACKUP_WARN_DAYS,
     validateProjections, buildIndex, injuryLevel, isStartingSlot, eligibleFor, hungarian, benchGap, benchTableHtml,
     applyTransaction, transactionProblem, applySwitch, reasonFor, pageKey, marketTrouble,
+    startersOf, startingSlotsOf, lineupIsKnown, eligibleForSlot,
     imageFilesFrom, leagueForShot, placeholderName, placeholderId, PLACEHOLDER_PREFIX, rosterFromPaste,
     buildLineup, lineupChanges, espnSlots, espnCounts, normaliseName, parseEspnPaste, pasteKeys, PASTE_SLOT, searchPlayers,
     canonicalTeam, SleeperError, sleeperUser, sleeperLeague, importSleeperUser, sleeperTeams,
