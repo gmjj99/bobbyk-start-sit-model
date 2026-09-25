@@ -54,6 +54,40 @@ function compareScoring(base, interception) {
 // failed - and the page should say so rather than present last week's numbers as this week's.
 const STALE_HOURS = 72;
 
+// How long the betting market may go unseen before the page says so, and how thin the priced share
+// has to get before it counts as "not priced at all".
+//
+// Michael, 24 September 2026, on a craft board showing the previous week: the odds key had been
+// deactivated since the 20th. Every capture ran, every publish succeeded, and the page served a
+// file generated minutes earlier in which none of 463 players carried a betting line. The stale
+// banner never fired because it asks whether the FILE is fresh, and the file was always fresh.
+// The thing that had stopped was the market underneath it.
+const MARKET_STALE_HOURS = 30;
+const MARKET_THIN_SHARE = 0.05;
+
+/* What is wrong with the market behind this file, in a sentence, or null when nothing is.
+ *
+ * Two separate failures, because they read differently to somebody holding a lineup: nothing has
+ * been captured for a while, or plenty was captured and almost none of it priced anybody. */
+function marketTrouble(market, now) {
+  if (!market) return null;
+  const priced = Number(market.priced);
+  const players = Number(market.players);
+  if (Number.isFinite(priced) && Number.isFinite(players) && players > 0
+      && priced / players < MARKET_THIN_SHARE) {
+    return 'No betting lines reached this week\'s file - ' + priced + ' of ' + players
+      + ' players are priced - so every number here is coming from recent form alone. '
+      + 'That usually means the odds feed stopped: check the API key.';
+  }
+  const seen = Date.parse(market.as_of);
+  if (!Number.isFinite(seen)) return null;
+  const hours = (now.getTime() - seen) / 3600000;
+  if (hours < MARKET_STALE_HOURS) return null;
+  return 'The betting market behind these numbers was last read '
+    + (hours >= 48 ? Math.floor(hours / 24) + ' days' : Math.round(hours) + ' hours')
+    + ' ago. Lines move; these have not.';
+}
+
 function staleness(generatedAt, now) {
   const made = Date.parse(generatedAt);
   if (!Number.isFinite(made)) return null;
@@ -1676,6 +1710,12 @@ function renderHeader() {
   $('#accuracy').innerHTML = '';
   $('#sample-banner').hidden = !state.sample;
   const stale = state.sample ? null : staleness(d.generated_at, state.now);
+  const market = state.sample ? null : marketTrouble(d.market, state.now);
+  const marketBanner = $('#market-banner');
+  if (marketBanner) {
+    marketBanner.hidden = !market;
+    marketBanner.innerHTML = market ? '<strong>Running without the market.</strong> ' + esc(market) : '';
+  }
   const staleBanner = $('#stale-banner');
   if (staleBanner) {
     staleBanner.hidden = !stale;
@@ -2941,7 +2981,7 @@ if (typeof module !== 'undefined' && module.exports) {
     compareCall, describeCall, compareScoring, resolveTheme, needsThemePrompt, meterFill, THEMES, mergeLeagueSets, sameLeagueSets, SUPABASE_URL, SUPABASE_KEY, staleness, sleeperDue, rosterAgeDays, backupDue,
     STALE_HOURS, SLEEPER_REFRESH_HOURS, ESPN_ROSTER_WARN_DAYS, BACKUP_WARN_DAYS,
     validateProjections, buildIndex, injuryLevel, isStartingSlot, eligibleFor, hungarian, benchGap, benchTableHtml,
-    applyTransaction, transactionProblem, applySwitch, reasonFor, pageKey,
+    applyTransaction, transactionProblem, applySwitch, reasonFor, pageKey, marketTrouble,
     imageFilesFrom, leagueForShot, placeholderName, placeholderId, PLACEHOLDER_PREFIX, rosterFromPaste,
     buildLineup, lineupChanges, espnSlots, espnCounts, normaliseName, parseEspnPaste, pasteKeys, PASTE_SLOT, searchPlayers,
     canonicalTeam, SleeperError, sleeperUser, sleeperLeague, importSleeperUser, sleeperTeams,
